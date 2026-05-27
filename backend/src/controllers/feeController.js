@@ -186,11 +186,20 @@ async function updateFeeStructure(req, res, next) {
     let studentsUpdated = 0;
     if (cascadeToStudents === true) {
       const Student = require('../models/studentModel');
-      const result = await Student.updateMany(
-        { schoolId: req.schoolId, class: className, deletedAt: null },
-        { feeAmount, remainingBalance: null }
-      );
-      studentsUpdated = result.modifiedCount || 0;
+      const students = await Student.find({ schoolId: req.schoolId, class: className, deletedAt: null });
+      
+      // Process in batches of 500 to avoid memory issues
+      const BATCH_SIZE = 500;
+      for (let i = 0; i < students.length; i += BATCH_SIZE) {
+        const batch = students.slice(i, i + BATCH_SIZE);
+        for (const student of batch) {
+          student.feeAmount = feeAmount;
+          student.remainingBalance = Math.max(0, feeAmount - (student.totalPaid || 0));
+          student.feePaid = (student.totalPaid || 0) >= feeAmount;
+          await student.save(); // triggers pre-save hook for fees array sync
+          studentsUpdated++;
+        }
+      }
     }
 
     // Audit log
