@@ -63,7 +63,6 @@ function wrapStellarError(err) {
   }
   return err;
 }
-const { encryptMemo, isEncryptionEnabled } = require("../utils/memoEncryption");
 
 // ====================== PAYMENT INSTRUCTIONS ======================
 async function getPaymentInstructions(req, res, next) {
@@ -117,8 +116,7 @@ async function getPaymentInstructions(req, res, next) {
 
     res.json({
       walletAddress: req.school.stellarAddress,
-      memo: encryptMemo(req.params.studentId),
-      memoEncrypted: isEncryptionEnabled(),
+      memo: req.params.studentId,
       acceptedAssets: Object.values(ACCEPTED_ASSETS).map((a) => ({
         code: a.code,
         type: a.type,
@@ -190,8 +188,7 @@ async function createPaymentIntent(req, res, next) {
       });
     }
 
-    const rawMemo = crypto.randomBytes(4).toString("hex").toUpperCase();
-    const memo = encryptMemo(rawMemo);
+    const memo = crypto.randomBytes(4).toString("hex").toUpperCase();
     const ttlMs =
       parseInt(process.env.PAYMENT_INTENT_TTL_MS, 10) || 24 * 60 * 60 * 1000;
     const expiresAt = new Date(Date.now() + ttlMs);
@@ -1118,7 +1115,9 @@ async function getExchangeRates(req, res, next) {
         available: false,
         currency: targetCurrency,
         rates: null,
-        rateTimestamp: null,
+        lastFetchedAt: null,
+        stale: false,
+        staleAge: null,
         message:
           "Price feed is currently unavailable. Amounts are shown in XLM only.",
       });
@@ -1128,6 +1127,9 @@ async function getExchangeRates(req, res, next) {
       available: true,
       currency: targetCurrency,
       rates: rateEntry.rates,
+      lastFetchedAt: (rateEntry.lastSuccessfulFetch || rateEntry.fetchedAt).toISOString(),
+      stale: rateEntry.stale || false,
+      staleAge: rateEntry.staleAge || null,
       rateTimestamp: rateEntry.fetchedAt.toISOString(),
     });
   } catch (err) {

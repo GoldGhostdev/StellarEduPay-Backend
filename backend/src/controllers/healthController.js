@@ -5,6 +5,7 @@ const { server } = require('../config/stellarConfig');
 const config = require('../config');
 const { concurrentPaymentProcessor } = require('../services/concurrentPaymentProcessor');
 const { getReminderStatus } = require('../services/reminderService');
+const { getCachedRates } = require('../services/currencyConversionService');
 const logger = require('../utils/logger');
 
 const STELLAR_CHECK_TIMEOUT_MS = 3000; // 3 second timeout for Stellar health check
@@ -60,6 +61,20 @@ async function healthCheck(req, res) {
   const retryBackend = retrySelector.getSelectedBackend();
   const redisConfigured = Boolean(process.env.REDIS_HOST);
 
+  // Price feed status
+  const cachedRates = getCachedRates();
+  const priceFeedStatus = Object.entries(cachedRates).map(([currency, data]) => {
+    const staleAge = data.lastSuccessfulFetch
+      ? Math.floor((Date.now() - new Date(data.lastSuccessfulFetch).getTime()) / 1000)
+      : null;
+    return {
+      currency,
+      available: true,
+      lastFetchedAt: data.lastSuccessfulFetch || data.fetchedAt,
+      staleAge,
+    };
+  });
+
   const body = {
     status: overallStatus,
     timestamp: new Date().toISOString(),
@@ -87,6 +102,10 @@ async function healthCheck(req, res) {
         backend: retryBackend || 'not_started',
         redisConfigured,
         ...(redisConfigured && { redisHost: process.env.REDIS_HOST }),
+      },
+      priceFeed: {
+        available: priceFeedStatus.length > 0,
+        rates: priceFeedStatus,
       },
     },
   };
