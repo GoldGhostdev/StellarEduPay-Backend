@@ -18,7 +18,7 @@ function isValidTimezone(tz) {
 // POST /api/schools
 async function createSchool(req, res, next) {
   try {
-    const { name, slug, stellarAddress, network, adminEmail, address, timezone } = req.body;
+    const { name, slug, stellarAddress, network, adminEmail, address, timezone, suspiciousPaymentMultiplier } = req.body;
 
     const errors = [];
     if (!name || typeof name !== 'string' || !name.trim())
@@ -31,6 +31,11 @@ async function createSchool(req, res, next) {
       errors.push('stellarAddress must be a valid Stellar public key (Ed25519)');
     if (network && !['testnet', 'mainnet'].includes(network))
       errors.push('network must be "testnet" or "mainnet"');
+    if (suspiciousPaymentMultiplier !== undefined) {
+      if (typeof suspiciousPaymentMultiplier !== 'number' || suspiciousPaymentMultiplier < 1.1 || suspiciousPaymentMultiplier > 100) {
+        errors.push('suspiciousPaymentMultiplier must be a number between 1.1 and 100');
+      }
+    }
     if (errors.length) return res.status(400).json({ errors, code: 'VALIDATION_ERROR' });
 
     if (timezone !== undefined && !isValidTimezone(timezone)) {
@@ -53,6 +58,7 @@ async function createSchool(req, res, next) {
       adminEmail: adminEmail || null,
       address: address || null,
       ...(timezone !== undefined && { timezone }),
+      ...(suspiciousPaymentMultiplier !== undefined && { suspiciousPaymentMultiplier }),
     });
 
     // Audit log
@@ -144,7 +150,7 @@ async function getSchool(req, res, next) {
 // PATCH /api/schools/:schoolSlug
 async function updateSchool(req, res, next) {
   try {
-    const allowed = ['name', 'stellarAddress', 'network', 'adminEmail', 'address'];
+    const allowed = ['name', 'stellarAddress', 'network', 'adminEmail', 'address', 'suspiciousPaymentMultiplier'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
@@ -156,6 +162,16 @@ async function updateSchool(req, res, next) {
         error: 'stellarAddress must be a valid Stellar public key (Ed25519)',
         code: 'INVALID_STELLAR_ADDRESS',
       });
+    }
+
+    // Validate suspiciousPaymentMultiplier if being updated
+    if (updates.suspiciousPaymentMultiplier !== undefined) {
+      if (typeof updates.suspiciousPaymentMultiplier !== 'number' || updates.suspiciousPaymentMultiplier < 1.1 || updates.suspiciousPaymentMultiplier > 100) {
+        return res.status(400).json({
+          error: 'suspiciousPaymentMultiplier must be a number between 1.1 and 100',
+          code: 'INVALID_SUSPICIOUS_PAYMENT_MULTIPLIER',
+        });
+      }
     }
 
     const original = await School.findOne({ slug: req.params.schoolSlug.toLowerCase(), isActive: true }).lean();
