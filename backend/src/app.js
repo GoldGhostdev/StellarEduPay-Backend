@@ -39,6 +39,7 @@ const { requireAdminAuth } = require('./middleware/auth');
 const { runConsistencyCheck } = require('./controllers/consistencyController');
 const { healthCheck } = require('./controllers/healthController');
 const logger = require('./utils/logger');
+const { startHeapMonitoring } = require('./utils/heapMonitoring');
 
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
@@ -141,6 +142,9 @@ mongoose.connection.on('error', (err) =>
 );
 
 connectWithRetry().then(async () => {
+  // Start heap monitoring to detect memory leaks early
+  startHeapMonitoring();
+
   // Seed default system config entries on first run
   const SystemConfig = require('./models/systemConfigModel');
   const DEFAULTS = [
