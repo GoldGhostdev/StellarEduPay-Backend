@@ -30,9 +30,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: '.nvmrc'
-          cache: npm
-          cache-dependency-path: package-lock.json
+
+      - uses: actions/cache@v3
+        with:
+          path: |
+            backend/node_modules
+            frontend/node_modules
+            node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
 
       - run: npm ci
+
+      - run: cd backend && npm ci && cd ..
+
+      - run: cd frontend && npm ci && cd ..
 
       - run: npm test
