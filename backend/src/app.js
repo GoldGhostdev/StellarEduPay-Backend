@@ -19,6 +19,7 @@ const receiptsRoutes = require('./routes/receiptsRoutes');
 const feeAdjustmentRoutes = require('./routes/feeAdjustmentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const authRoutes = require('./routes/authRoutes');
+const metricsRoute = require('./routes/metricsRoute');
 
 const { registerPaymentSavedSubscribers } = require('./services/paymentSavedSubscribers');
 const { startPolling, stopPolling } = require('./services/transactionPollingService');
@@ -73,6 +74,10 @@ const concurrentMiddleware = createConcurrentRequestMiddleware({
   rateLimit: { windowMs: 60000, maxRequests: 100 },
   deduplicationTtlMs: 60000,
 });
+// ── Metrics ───────────────────────────────────────────────────────────────────
+// Mounted before the rate-limiter so Prometheus scrapes are never throttled.
+app.use('/metrics', metricsRoute);
+
 app.use(concurrentMiddleware.rateLimiter((req) => req.ip));
 app.use(concurrentMiddleware.requestQueue());
 

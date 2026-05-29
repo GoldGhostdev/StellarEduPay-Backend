@@ -37,6 +37,7 @@ const {
 } = require("../services/currencyConversionService");
 const { withStellarRetry } = require("../utils/withStellarRetry");
 const { logAudit } = require("../services/auditService");
+const { syncDurationSeconds } = require("../metrics");
 
 // Permanent error codes that should NOT be retried
 const PERMANENT_FAIL_CODES = [
@@ -743,8 +744,10 @@ async function syncAllPayments(req, res, next) {
     return res.status(409).json({ error: "Sync already in progress", code: "SYNC_IN_PROGRESS" });
   }
   _syncLocks.add(schoolId);
+  const stopSyncTimer = syncDurationSeconds.startTimer();
   try {
     const summary = await syncPaymentsForSchool(req.school);
+    stopSyncTimer();
 
     // Audit log
     if (req.auditContext) {
@@ -789,6 +792,7 @@ async function syncAllPayments(req, res, next) {
         userAgent: req.auditContext.userAgent,
       });
     }
+    stopSyncTimer();
     next(wrapStellarError(err));
   } finally {
     _syncLocks.delete(schoolId);
