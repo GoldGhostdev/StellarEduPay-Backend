@@ -19,9 +19,13 @@
       "node_modules",
       "backend/node_modules"
     ],
+    "setupFilesAfterEnv": [
+      "./tests/setup/blockRealHttp.js"
+    ],
     "testPathIgnorePatterns": [
       "/node_modules/",
-      "tests/stellar\\.integration\\.test\\.js"
+      "tests/stellar\\.integration\\.test\\.js",
+      "tests/integration/"
     ]
   },
   "dependencies": {

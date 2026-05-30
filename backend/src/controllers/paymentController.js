@@ -1702,4 +1702,5 @@ module.exports = {
   getPaymentSummary,
   updatePaymentStatus,
   getStuckPayments,
+  _syncLocks,
 };
