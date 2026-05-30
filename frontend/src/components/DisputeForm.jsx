@@ -138,7 +138,7 @@ export default function DisputeForm({ txHash, studentId, onSuccess, onCancel }) 
           <button
             type="submit"
             disabled={submitting}
-            style={{ padding: "0.5rem 1.25rem", border: "none", borderRadius: 6, background: "#1a1a2e", color: "#fff", cursor: submitting ? "not-allowed" : "pointer", fontSize: "0.875rem", opacity: submitting ? 0.7 : 1 }}
+            style={{ padding: "0.5rem 1.25rem", border: "none", borderRadius: 6, background: "var(--primary)", color: "#fff", cursor: submitting ? "not-allowed" : "pointer", fontSize: "0.875rem", opacity: submitting ? 0.7 : 1 }}
           >
             {submitting ? "Submitting…" : "Submit Dispute"}
           </button>

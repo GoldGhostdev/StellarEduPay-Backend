@@ -8,15 +8,48 @@
   --text: #1a1a1a;
   --muted: #64748b;
   --border: #e2e8f0;
+  --card-bg: #ffffff;
+  --error-bg: #fee2e2;
+  --error-color: #991b1b;
+  --error-border: #fecaca;
+  --success-bg: #dcfce7;
+  --success-color: #166534;
+  --success-border: #bbf7d0;
+  --warning-bg: #fef9c3;
+  --warning-color: #854d0e;
+  --warning-border: #fde68a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --bg: #1a1a2e;
+    --text: #e0e0e0;
+    --card-bg: #16213e;
+    --muted: #94a3b8;
+    --border: #1e293b;
+    --primary: #7ec8e3;
+    color-scheme: dark;
+  }
 }
 
 html.dark {
   --bg: #0f172a;
   --text: #e2e8f0;
+  --card-bg: #1e293b;
   --muted: #94a3b8;
   --border: #1e293b;
   --primary: #7ec8e3;
   color-scheme: dark;
+}
+
+html.light {
+  --bg: #f8fafc;
+  --text: #1a1a1a;
+  --card-bg: #ffffff;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --primary: #1a1a2e;
+  color-scheme: light;
 }
 
 html.dark body {
@@ -24,8 +57,8 @@ html.dark body {
   color: var(--text);
 }
 
-html.dark .card {
-  background: #1e293b;
+html.dark .card,
+:root:not(.light) .card {
   box-shadow: 0 1px 3px rgba(0,0,0,0.4);
 }
 
@@ -97,7 +130,7 @@ button {
 }
 
 .card {
-  background: white;
+  background: var(--card-bg);
   border-radius: 8px;
   padding: 1.5rem;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);

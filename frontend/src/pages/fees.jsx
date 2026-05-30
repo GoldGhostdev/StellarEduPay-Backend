@@ -24,7 +24,7 @@ function DeleteConfirmModal({ feeStructure, studentCount, onConfirm, onCancel })
         <h2 id="modal-title" style={{ marginTop: 0, fontSize: "1.1rem" }}>
           Delete fee structure?
         </h2>
-        <p id="modal-desc" style={{ color: "#555", lineHeight: 1.5 }}>
+        <p id="modal-desc" style={{ color: "var(--text)", lineHeight: 1.5 }}>
           You are about to delete the fee structure for{" "}
           <strong>{feeStructure.className}</strong>.
           {studentCount > 0 && (
@@ -92,16 +92,16 @@ export default function FeesPage() {
       <h1 style={{ fontSize: "1.5rem", marginBottom: "1.5rem" }}>Fee Structures</h1>
 
       {error && (
-        <p role="alert" style={{ color: "#991b1b" }}>{error}</p>
+        <p role="alert" style={{ color: "var(--error-color)" }}>{error}</p>
       )}
       {deleteError && (
-        <p role="alert" style={{ color: "#991b1b" }}>{deleteError}</p>
+        <p role="alert" style={{ color: "var(--error-color)" }}>{deleteError}</p>
       )}
 
       {loading ? (
         <p aria-busy="true">Loading fee structures…</p>
       ) : fees.length === 0 ? (
-        <p style={{ color: "#888" }}>No fee structures found.</p>
+        <p style={{ color: "var(--muted)" }}>No fee structures found.</p>
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
           <thead>
@@ -153,13 +153,13 @@ const thStyle = {
   fontSize: "0.75rem",
   textTransform: "uppercase",
   letterSpacing: "0.05em",
-  color: "#666",
-  borderBottom: "2px solid #e0e0e0",
+  color: "var(--muted)",
+  borderBottom: "2px solid var(--border)",
 };
 
 const tdStyle = {
   padding: "0.75rem 1rem",
-  borderBottom: "1px solid #f0f0f0",
+  borderBottom: "1px solid var(--border)",
 };
 
 const overlayStyle = {
@@ -173,7 +173,7 @@ const overlayStyle = {
 };
 
 const modalStyle = {
-  background: "#fff",
+  background: "var(--card-bg)",
   borderRadius: 10,
   padding: "1.5rem",
   maxWidth: 420,
@@ -184,8 +184,9 @@ const modalStyle = {
 const cancelBtnStyle = {
   padding: "0.5rem 1.2rem",
   borderRadius: 6,
-  border: "1px solid #ccc",
-  background: "#fff",
+  border: "1px solid var(--border)",
+  background: "var(--bg)",
+  color: "var(--text)",
   cursor: "pointer",
   fontSize: "0.9rem",
 };

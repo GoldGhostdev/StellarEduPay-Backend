@@ -61,7 +61,7 @@ export default function LoginPage() {
             style={{ display: 'block', width: '100%', marginTop: '0.25rem', padding: '0.5rem', boxSizing: 'border-box' }}
           />
         </label>
-        {error && <p role="alert" style={{ color: 'red', margin: 0 }}>{error}</p>}
+        {error && <p role="alert" style={{ color: 'var(--error-color)', margin: 0 }}>{error}</p>}
         <button type="submit" disabled={loading} style={{ padding: '0.6rem', cursor: 'pointer' }}>
           {loading ? 'Signing in…' : 'Sign in'}
         </button>

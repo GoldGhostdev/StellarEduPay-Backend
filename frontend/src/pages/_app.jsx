@@ -11,11 +11,19 @@ export default function MyApp({ Component, pageProps }) {
 
   useEffect(() => {
     const saved = localStorage.getItem("theme");
-    if (saved === "dark") setDark(true);
+    if (saved === "dark") {
+      setDark(true);
+    } else if (saved === "light") {
+      setDark(false);
+    } else {
+      // No saved preference — follow system
+      setDark(window.matchMedia("(prefers-color-scheme: dark)").matches);
+    }
   }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
+    document.documentElement.classList.toggle("light", !dark);
     localStorage.setItem("theme", dark ? "dark" : "light");
   }, [dark]);
 

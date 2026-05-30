@@ -158,11 +158,11 @@ export default function AuditLogsPage() {
 
       {/* Results */}
       {loading ? (
-        <p style={{ color: "#888" }}>Loading audit logs...</p>
+        <p style={{ color: "var(--muted)" }}>Loading audit logs...</p>
       ) : error ? (
-        <p style={{ color: "#c62828" }}>{error}</p>
+        <p style={{ color: "var(--error-color)" }}>{error}</p>
       ) : logs.length === 0 ? (
-        <p style={{ color: "#888" }}>No audit logs found</p>
+        <p style={{ color: "var(--muted)" }}>No audit logs found</p>
       ) : (
         <>
           <div style={tableContainerStyle}>
@@ -192,8 +192,8 @@ export default function AuditLogsPage() {
                       <span
                         style={{
                           ...resultBadgeStyle,
-                          background: log.result === "success" ? "#e8f5e9" : "#ffebee",
-                          color: log.result === "success" ? "#2e7d32" : "#c62828",
+                          background: log.result === "success" ? "var(--success-bg)" : "var(--error-bg)",
+                          color: log.result === "success" ? "var(--success-color)" : "var(--error-color)",
                         }}
                       >
                         {log.result}
@@ -201,12 +201,12 @@ export default function AuditLogsPage() {
                     </td>
                     <td style={tdStyle}>
                       {log.errorMessage ? (
-                        <span style={{ color: "#c62828", fontSize: "0.85rem" }}>
+                        <span style={{ color: "var(--error-color)", fontSize: "0.85rem" }}>
                           {log.errorMessage}
                         </span>
                       ) : (
                         <details style={{ fontSize: "0.85rem" }}>
-                          <summary style={{ cursor: "pointer", color: "#1565c0" }}>
+                          <summary style={{ cursor: "pointer", color: "var(--accent)" }}>
                             View
                           </summary>
                           <pre style={preStyle}>
@@ -235,7 +235,7 @@ export default function AuditLogsPage() {
             >
               Previous
             </button>
-            <span style={{ fontSize: "0.9rem", color: "#666" }} aria-live="polite">
+            <span style={{ fontSize: "0.9rem", color: "var(--muted)" }} aria-live="polite">
               Page {page} of {pages} &mdash; {total.toLocaleString()} total entries
             </span>
             <button
@@ -267,7 +267,7 @@ const titleStyle = {
   fontSize: "2rem",
   fontWeight: 700,
   marginBottom: "1.5rem",
-  color: "#1a1a1a",
+  color: "var(--text)",
 };
 
 const filtersStyle = {
@@ -276,8 +276,8 @@ const filtersStyle = {
   gap: "1rem",
   marginBottom: "1.5rem",
   padding: "1.5rem",
-  background: "#fff",
-  border: "1px solid #e0e0e0",
+  background: "var(--card-bg)",
+  border: "1px solid var(--border)",
   borderRadius: 10,
 };
 
@@ -290,30 +290,33 @@ const filterGroupStyle = {
 const labelStyle = {
   fontSize: "0.85rem",
   fontWeight: 600,
-  color: "#666",
+  color: "var(--muted)",
   textTransform: "uppercase",
   letterSpacing: "0.05em",
 };
 
 const selectStyle = {
   padding: "0.6rem",
-  border: "1px solid #ddd",
+  border: "1px solid var(--border)",
   borderRadius: 6,
   fontSize: "0.9rem",
-  background: "#fff",
+  background: "var(--bg)",
+  color: "var(--text)",
 };
 
 const inputStyle = {
   padding: "0.6rem",
-  border: "1px solid #ddd",
+  border: "1px solid var(--border)",
   borderRadius: 6,
   fontSize: "0.9rem",
+  background: "var(--bg)",
+  color: "var(--text)",
 };
 
 const tableContainerStyle = {
   overflowX: "auto",
-  background: "#fff",
-  border: "1px solid #e0e0e0",
+  background: "var(--card-bg)",
+  border: "1px solid var(--border)",
   borderRadius: 10,
   padding: "1rem",
 };
@@ -327,8 +330,8 @@ const tableStyle = {
 const thStyle = {
   textAlign: "left",
   padding: "0.75rem",
-  borderBottom: "2px solid #e0e0e0",
-  color: "#666",
+  borderBottom: "2px solid var(--border)",
+  color: "var(--muted)",
   fontWeight: 600,
   fontSize: "0.85rem",
   textTransform: "uppercase",
@@ -337,8 +340,8 @@ const thStyle = {
 
 const tdStyle = {
   padding: "0.75rem",
-  borderBottom: "1px solid #f0f0f0",
-  color: "#333",
+  borderBottom: "1px solid var(--border)",
+  color: "var(--text)",
 };
 
 const trStyle = {
@@ -348,8 +351,8 @@ const trStyle = {
 const targetBadgeStyle = {
   display: "inline-block",
   padding: "0.2rem 0.5rem",
-  background: "#e3f2fd",
-  color: "#1565c0",
+  background: "rgba(126,200,227,0.15)",
+  color: "var(--accent)",
   borderRadius: 4,
   fontSize: "0.75rem",
   fontWeight: 600,
@@ -368,7 +371,7 @@ const resultBadgeStyle = {
 const preStyle = {
   marginTop: "0.5rem",
   padding: "0.5rem",
-  background: "#f5f5f5",
+  background: "var(--border)",
   borderRadius: 4,
   fontSize: "0.75rem",
   overflow: "auto",
@@ -381,15 +384,15 @@ const paginationStyle = {
   justifyContent: "space-between",
   marginTop: "1.5rem",
   padding: "1rem",
-  background: "#fff",
-  border: "1px solid #e0e0e0",
+  background: "var(--card-bg)",
+  border: "1px solid var(--border)",
   borderRadius: 10,
 };
 
 const pageBtnStyle = {
   padding: "0.6rem 1.2rem",
   fontSize: "0.9rem",
-  background: "#1a1a2e",
+  background: "var(--primary)",
   color: "#fff",
   border: "none",
   borderRadius: 6,

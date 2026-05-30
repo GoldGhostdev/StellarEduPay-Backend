@@ -65,7 +65,7 @@ function ResolveForm({ dispute, onResolved }) {
       <button
         type="submit"
         disabled={submitting}
-        style={{ marginTop: "0.5rem", padding: "0.4rem 1rem", border: "none", borderRadius: 6, background: "#1a1a2e", color: "#fff", cursor: submitting ? "not-allowed" : "pointer", fontSize: "0.85rem", opacity: submitting ? 0.7 : 1 }}
+        style={{ marginTop: "0.5rem", padding: "0.4rem 1rem", border: "none", borderRadius: 6, background: "var(--primary)", color: "#fff", cursor: submitting ? "not-allowed" : "pointer", fontSize: "0.85rem", opacity: submitting ? 0.7 : 1 }}
       >
         {submitting ? "Saving…" : "Save"}
       </button>
@@ -158,7 +158,7 @@ export default function DisputesPage() {
             style={{ padding: "0.45rem 0.75rem", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--text)", fontSize: "0.875rem" }}
           />
         </div>
-        <button type="submit" style={{ padding: "0.45rem 1rem", border: "none", borderRadius: 6, background: "#1a1a2e", color: "#fff", cursor: "pointer", fontSize: "0.875rem" }}>
+        <button type="submit" style={{ padding: "0.45rem 1rem", border: "none", borderRadius: 6, background: "var(--primary)", color: "#fff", cursor: "pointer", fontSize: "0.875rem" }}>
           Search
         </button>
       </form>
