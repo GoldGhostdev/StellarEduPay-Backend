@@ -43,6 +43,7 @@ function normalizeAmount(rawAmount) {
 
 /**
  * Extract and validate the payment operation from a transaction.
+ * Handles fee-bump transactions by unwrapping to the inner transaction.
  * walletAddress is passed explicitly — supports per-school wallets.
  * Returns { payOp, memo, asset, memoType } or null if the transaction is invalid.
  * 
@@ -54,8 +55,11 @@ function normalizeAmount(rawAmount) {
 async function extractValidPayment(tx, walletAddress) {
   if (!tx.successful) return null;
 
+  // Unwrap fee-bump transaction to get the inner transaction
+  const innerTx = tx.inner_transaction || tx;
+
   // Check memo type and handle accordingly
-  const memoType = tx.memo_type || 'none';
+  const memoType = innerTx.memo_type || 'none';
   
   if (memoType === 'none') {
     // No memo provided
@@ -67,15 +71,15 @@ async function extractValidPayment(tx, walletAddress) {
     logger.warn('Transaction has unsupported memo type', {
       txHash: tx.hash,
       memoType,
-      memo: tx.memo,
+      memo: innerTx.memo,
     });
     return null;
   }
 
-  const memo = tx.memo ? tx.memo.trim() : null;
+  const memo = innerTx.memo ? innerTx.memo.trim() : null;
   if (!memo) return null;
 
-  const ops = await withStellarRetry(() => tx.operations(), {
+  const ops = await withStellarRetry(() => innerTx.operations(), {
     label: "extractValidPayment.operations",
   });
   const payOp = ops.records.find(
@@ -223,6 +227,7 @@ async function detectAbnormalPatterns(
 
 /**
  * Verify a single transaction hash against a specific school wallet.
+ * Handles fee-bump transactions by unwrapping to the inner transaction.
  * Throws structured errors for all failure cases.
  *
  * Error codes:
@@ -250,8 +255,11 @@ async function verifyTransaction(txHash, walletAddress) {
     throw err;
   }
 
+  // Unwrap fee-bump transaction to get the inner transaction
+  const innerTx = tx.inner_transaction || tx;
+
   // 2. Check memo type
-  const memoType = tx.memo_type || 'none';
+  const memoType = innerTx.memo_type || 'none';
   
   if (memoType === 'none') {
     const err = new Error(
@@ -270,7 +278,7 @@ async function verifyTransaction(txHash, walletAddress) {
     throw err;
   }
 
-  const memo = tx.memo ? tx.memo.trim() : null;
+  const memo = innerTx.memo ? innerTx.memo.trim() : null;
   if (!memo) {
     const err = new Error(
       "Transaction memo is missing or empty — cannot identify student",
@@ -279,7 +287,7 @@ async function verifyTransaction(txHash, walletAddress) {
     throw err;
   }
 
-  const ops = await withStellarRetry(() => tx.operations(), {
+  const ops = await withStellarRetry(() => innerTx.operations(), {
     label: "verifyTransaction.operations",
   });
   const payOp = ops.records.find(
