@@ -695,6 +695,79 @@ Structured JSON to stdout:
 }
 ```
 
+### Logging Configuration
+
+#### Log Levels
+
+The application supports four log levels (from least to most verbose):
+
+| Level | Use Case |
+|-------|----------|
+| `error` | Production: only errors. Minimal overhead, best for high-volume services. |
+| `warn` | Warnings and errors. Good for production health monitoring. |
+| `info` | **Development default.** Info + warnings + errors. Readable without spam. |
+| `debug` | All events including low-level operations. Use only for troubleshooting. |
+
+#### Setting Log Level
+
+**Via environment variable (startup):**
+```bash
+LOG_LEVEL=debug npm start        # Set at startup
+LOG_LEVEL=warn npm start         # Production mode
+```
+
+Default is `info`.
+
+**At runtime (no restart needed):**
+```bash
+# Change log level via admin API
+curl -X POST http://localhost:5000/api/admin/log-level \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"level": "debug"}'
+
+# Response
+{ "previous": "info", "current": "debug" }
+```
+
+Verify current level at any time:
+```bash
+curl http://localhost:5000/health | jq .logLevel
+```
+
+#### Suppressing Third-Party Noise
+
+In development (`NODE_ENV != production`), the backend automatically suppresses verbose logging from:
+- **ioredis** — Redis connection/reconnection spam
+- **mongoose** — Schema validation debug info
+
+This keeps the console output clean at the default `info` level. To see low-level details:
+```bash
+LOG_LEVEL=debug npm run dev
+```
+
+#### File Logging
+
+Application logs are also written to disk with daily rotation:
+- **Combined:** `logs/combined-YYYY-MM-DD.log` (all levels)
+- **Errors only:** `logs/error-YYYY-MM-DD.log` (errors only)
+
+Configuration via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_MAX_SIZE` | `100m` | Size before file rotation |
+| `LOG_MAX_FILES` | `14d` | Keep this many rotated files |
+
+Examples:
+```bash
+# Keep larger files
+LOG_MAX_SIZE=500m npm start
+
+# Shorter retention
+LOG_MAX_FILES=7d npm start
+```
+
 ### Recommended Alerting Thresholds
 
 | Alert | Warning | Critical |

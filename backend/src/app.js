@@ -7,6 +7,18 @@ const cors = require('cors');
 const helmet = require('helmet');
 const mongoose = require('mongoose');
 
+// ── Suppress verbose third-party logging in development ──────────────────────
+// Prevent noise from ioredis reconnect attempts, Mongoose debug info, etc.
+// when LOG_LEVEL=info (the development default).
+if (process.env.NODE_ENV !== 'production') {
+  // Suppress ioredis verbose logging (connection/reconnection attempts)
+  const redisDebug = require('debug');
+  redisDebug.disable('*');
+  
+  // Suppress Mongoose debug output
+  mongoose.set('debug', false);
+}
+
 const studentRoutes = require('./routes/studentRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const feeRoutes = require('./routes/feeRoutes');
