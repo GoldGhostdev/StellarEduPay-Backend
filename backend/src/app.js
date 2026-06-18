@@ -256,6 +256,7 @@ async function shutdown(signal) {
     await closeQueue();
     await bullMQRetryService.shutdownQueue();
     await require('./services/sseService').close();
+    await require('./services/distributedLock').close();
     logger.info('BullMQ resources closed cleanly');
   } catch (err) {
     logger.error('Error closing BullMQ resources during shutdown', { error: err.message });

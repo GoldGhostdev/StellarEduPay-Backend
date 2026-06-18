@@ -69,6 +69,12 @@ const _syncRaw =
   process.env.SYNC_INTERVAL_MS ?? process.env.POLL_INTERVAL_MS ?? "60000";
 const SYNC_INTERVAL_MS = parseInt(_syncRaw, 10);
 
+// How long a per-school sync lock is held before auto-expiring. Acts as the
+// crash-safety net for the distributed lock around each poll cycle: must
+// comfortably exceed the time it takes to poll a single school, but stay short
+// enough that a dead worker's lock frees up reasonably quickly. Default: 60s.
+const SYNC_LOCK_TTL_MS = parseInt(process.env.SYNC_LOCK_TTL_MS || "60000", 10);
+
 // ── Retry Service ─────────────────────────────────────────────────────────────
 const RETRY_INTERVAL_MS = parseInt(
   process.env.RETRY_INTERVAL_MS || "60000",
@@ -161,6 +167,7 @@ const config = Object.freeze({
   CONFIRMATION_THRESHOLD,
   POLL_INTERVAL_MS,
   SYNC_INTERVAL_MS,
+  SYNC_LOCK_TTL_MS,
   RETRY_INTERVAL_MS,
   RETRY_MAX_ATTEMPTS,
   MIN_PAYMENT_AMOUNT,

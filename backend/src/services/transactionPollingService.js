@@ -9,19 +9,25 @@ const { extractValidPayment, validatePaymentAgainstFee, detectMemoCollision, det
 const { validatePaymentAmount } = require('../utils/paymentLimits');
 const { generateReferenceCode } = require('../utils/generateReferenceCode');
 const { emit: sseEmit } = require('./sseService');
+const lock = require('./distributedLock');
+const config = require('../config');
 const logger = require('../utils/logger').child('TransactionPollingService');
 
 let pollingInterval = null;
 let isPolling = false;
 
-const POLLING_INTERVAL_MS = 30000; // Poll every 30 seconds
+// Base poll interval, honoring SYNC_INTERVAL_MS from config (which itself falls
+// back to POLL_INTERVAL_MS). A value of 0 disables auto-sync entirely.
+const SYNC_INTERVAL_MS = config.SYNC_INTERVAL_MS;
+// TTL of the per-school distributed sync lock (crash-safety net).
+const SYNC_LOCK_TTL_MS = config.SYNC_LOCK_TTL_MS;
 const TRANSACTIONS_PER_POLL = 20;
 
 // Exponential backoff state — reset on first successful poll after errors.
 // POLL_MAX_BACKOFF_MS defaults to 5 minutes; configurable via env var.
 const POLL_MAX_BACKOFF_MS = parseInt(process.env.POLL_MAX_BACKOFF_MS || '300000', 10);
 let consecutiveErrors = 0;
-let currentIntervalMs = POLLING_INTERVAL_MS;
+let currentIntervalMs = SYNC_INTERVAL_MS;
 
 /**
  * Process a single transaction for a school
@@ -29,8 +35,12 @@ let currentIntervalMs = POLLING_INTERVAL_MS;
 async function processTransaction(tx, school) {
   const { schoolId, stellarAddress } = school;
 
-  // Skip if already processed
-  const existing = await Payment.findOne({ txHash: tx.hash, deletedAt: null });
+  // Cheap optimisation only: skip work for transactions we've clearly already
+  // recorded. This is NOT the dedup guarantee — it is a read-then-write race
+  // (two workers can both miss the row). The authoritative guard is the unique
+  // index on Payment { schoolId, txHash }, which makes the insert below fail
+  // atomically with code 11000 if a concurrent worker won the race.
+  const existing = await Payment.findOne({ schoolId, txHash: tx.hash, deletedAt: null });
   if (existing) {
     return { processed: false, reason: 'duplicate' };
   }
@@ -173,9 +183,25 @@ async function processTransaction(tx, school) {
 }
 
 /**
- * Poll transactions for a single school
+ * Poll transactions for a single school.
+ *
+ * Wrapped in a per-school distributed lock (Redis SET NX PX) so that, across
+ * horizontally-scaled replicas or an overlapping slow poll, only one worker
+ * syncs a given school at a time. If the lock is already held the cycle is
+ * skipped — the holder will pick up any new transactions. Correctness against
+ * duplicate writes does not depend on the lock: the unique index on Payment
+ * remains the authoritative dedup guard if the lock ever expires mid-poll.
  */
 async function pollSchoolTransactions(school) {
+  const lockKey = `sync:lock:${school.schoolId}`;
+  const token = await lock.acquire(lockKey, SYNC_LOCK_TTL_MS);
+  if (!token) {
+    logger.debug('Skipping school poll — sync lock held by another worker', {
+      schoolId: school.schoolId,
+    });
+    return { schoolId: school.schoolId, processed: 0, skipped: 0, lockSkipped: true };
+  }
+
   try {
     const transactions = await server
       .transactions()
@@ -211,6 +237,8 @@ async function pollSchoolTransactions(school) {
       error: error.message,
     });
     return { schoolId: school.schoolId, error: error.message, horizonError: true };
+  } finally {
+    await lock.release(lockKey, token);
   }
 }
 
@@ -251,7 +279,7 @@ async function pollAllSchools() {
     if (summary.errors > 0) {
       // At least one school hit a Horizon error — back off.
       consecutiveErrors++;
-      const backoff = Math.min(POLLING_INTERVAL_MS * Math.pow(2, consecutiveErrors), POLL_MAX_BACKOFF_MS);
+      const backoff = Math.min(SYNC_INTERVAL_MS * Math.pow(2, consecutiveErrors), POLL_MAX_BACKOFF_MS);
       currentIntervalMs = backoff;
       logger.info('Horizon errors detected; backing off polling interval', {
         consecutiveErrors,
@@ -261,11 +289,11 @@ async function pollAllSchools() {
       // Successful cycle — reset backoff.
       if (consecutiveErrors > 0) {
         logger.info('Polling recovered; resetting interval to normal', {
-          intervalMs: POLLING_INTERVAL_MS,
+          intervalMs: SYNC_INTERVAL_MS,
         });
       }
       consecutiveErrors = 0;
-      currentIntervalMs = POLLING_INTERVAL_MS;
+      currentIntervalMs = SYNC_INTERVAL_MS;
     }
 
     if (summary.processed > 0 || summary.errors > 0) {
@@ -273,7 +301,7 @@ async function pollAllSchools() {
     }
   } catch (error) {
     consecutiveErrors++;
-    const backoff = Math.min(POLLING_INTERVAL_MS * Math.pow(2, consecutiveErrors), POLL_MAX_BACKOFF_MS);
+    const backoff = Math.min(SYNC_INTERVAL_MS * Math.pow(2, consecutiveErrors), POLL_MAX_BACKOFF_MS);
     currentIntervalMs = backoff;
     logger.error('Error in polling cycle', { error: error.message, nextIntervalMs: currentIntervalMs });
   }
@@ -299,10 +327,16 @@ function startPolling() {
     return;
   }
 
+  // SYNC_INTERVAL_MS=0 disables auto-sync entirely (config contract).
+  if (!SYNC_INTERVAL_MS || SYNC_INTERVAL_MS <= 0) {
+    logger.info('Transaction polling disabled (SYNC_INTERVAL_MS=0)');
+    return;
+  }
+
   isPolling = true;
   consecutiveErrors = 0;
-  currentIntervalMs = POLLING_INTERVAL_MS;
-  logger.info('Starting transaction polling service', { intervalMs: POLLING_INTERVAL_MS });
+  currentIntervalMs = SYNC_INTERVAL_MS;
+  logger.info('Starting transaction polling service', { intervalMs: SYNC_INTERVAL_MS });
 
   // Run immediately on startup, then self-schedule via setTimeout for backoff support
   pollAllSchools();
@@ -332,7 +366,7 @@ module.exports = {
   _getBackoffState: () => ({ consecutiveErrors, currentIntervalMs }),
   _resetBackoffState: () => {
     consecutiveErrors = 0;
-    currentIntervalMs = POLLING_INTERVAL_MS;
+    currentIntervalMs = SYNC_INTERVAL_MS;
     isPolling = true; // allow direct pollAllSchools() calls in tests
     if (pollingInterval) { clearTimeout(pollingInterval); pollingInterval = null; }
   },
