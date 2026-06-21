@@ -5,7 +5,8 @@ const School = require('../models/schoolModel');
 const Payment = require('../models/paymentModel');
 const Student = require('../models/studentModel');
 const { server } = require('../config/stellarConfig');
-const { extractValidPayment, validatePaymentAgainstFee, detectMemoCollision, detectAbnormalPatterns, checkConfirmationStatus } = require('./stellarService');
+const { extractValidPayment, validatePaymentAgainstFee, detectMemoCollision, detectCrossSchoolMemoCollision, detectAbnormalPatterns, determineConfirmationState } = require('./stellarService');
+const { CONFIRMATION_STATES, isConfirmedOrAbove } = require('./paymentConfirmationStateMachine');
 const { validatePaymentAmount } = require('../utils/paymentLimits');
 const { generateReferenceCode } = require('../utils/generateReferenceCode');
 const { emit: sseEmit } = require('./sseService');
@@ -76,15 +77,22 @@ async function processTransaction(tx, school) {
   const senderAddress = payOp.from || null;
   const txDate = new Date(tx.created_at);
   const txLedger = tx.ledger_attr || tx.ledger || null;
-  const isConfirmed = txLedger ? await checkConfirmationStatus(txLedger) : false;
-  const confirmationStatus = isConfirmed ? 'confirmed' : 'pending_confirmation';
 
   // Check for suspicious activity
   const collision = await detectMemoCollision(memo, senderAddress, paymentAmount, student.feeAmount, txDate, schoolId);
+  const crossSchoolCollision = await detectCrossSchoolMemoCollision(memo, schoolId, txDate);
   const abnormal = await detectAbnormalPatterns(senderAddress, paymentAmount, student.feeAmount, txDate, schoolId, school.suspiciousPaymentMultiplier);
-  
-  const isSuspicious = collision.suspicious || abnormal.suspicious;
-  const suspicionReason = [collision.reason, abnormal.reason].filter(Boolean).join('; ') || null;
+
+  const isSuspicious = collision.suspicious || crossSchoolCollision.suspicious || abnormal.suspicious;
+  const suspicionReason = [collision.reason, crossSchoolCollision.reason, abnormal.reason].filter(Boolean).join('; ') || null;
+
+  const confirmation = await determineConfirmationState(
+    txLedger,
+    CONFIRMATION_STATES.DETECTED,
+    isSuspicious,
+  );
+  const isConfirmed = isConfirmedOrAbove(confirmation.state);
+  const confirmationStatus = confirmation.confirmationStatus;
 
   // Calculate cumulative totals
   const previousPayments = await Payment.aggregate([
@@ -126,7 +134,8 @@ async function processTransaction(tx, school) {
     suspicionReason,
     ledger: txLedger,
     ledgerSequence: txLedger,
-    confirmationStatus: isSuspicious ? 'failed' : confirmationStatus,
+    confirmationStatus,
+    confirmationState: confirmation.state,
     confirmedAt: txDate,
     referenceCode: await generateReferenceCode(),
     networkFee,
