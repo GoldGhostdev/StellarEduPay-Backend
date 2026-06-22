@@ -169,6 +169,9 @@ jest.mock('../backend/src/services/auditService', () => ({
 
 jest.mock('../backend/src/services/retryService', () => ({
   queueForRetry: jest.fn().mockResolvedValue({}),
+  startRetryWorker: jest.fn(),
+  stopRetryWorker: jest.fn(),
+  isRetryWorkerRunning: jest.fn().mockReturnValue(false),
 }));
 
 jest.mock('../backend/src/utils/memoEncryption', () => ({

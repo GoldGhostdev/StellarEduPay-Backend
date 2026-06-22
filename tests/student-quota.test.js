@@ -1,7 +1,7 @@
 'use strict';
 
 process.env.MONGO_URI = 'mongodb://localhost:27017/test';
-process.env.SCHOOL_WALLET_ADDRESS = 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B';
+process.env.SCHOOL_WALLET_ADDRESS = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 process.env.JWT_SECRET = 'test-secret';
 
 const request = require('supertest');
@@ -29,7 +29,7 @@ jest.mock('../backend/src/models/schoolModel', () => ({
       schoolId: 'SCH001',
       name: 'Test School',
       slug: 'test-school',
-      stellarAddress: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+      stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
       localCurrency: 'USD',
       isActive: true,
       maxStudents: 10,
@@ -128,6 +128,11 @@ jest.mock('../backend/src/services/auditService', () => ({
   logAudit: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../backend/src/middleware/auth', () => ({
+  requireAdminAuth: (req, res, next) => next(),
+  requireAuth: (req, res, next) => next(),
+}));
+
 const app = require('../backend/src/app');
 
 const SCHOOL_HEADERS = { 'X-School-ID': 'SCH001' };
@@ -150,7 +155,7 @@ describe('Student Quota (#680)', () => {
       Student.countDocuments.mockResolvedValueOnce(5);
       Student.findOne.mockResolvedValueOnce(null);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10, isActive: true }),
       });
       Student.create.mockResolvedValueOnce({
         studentId: 'STU001',
@@ -174,7 +179,7 @@ describe('Student Quota (#680)', () => {
       Student.countDocuments.mockResolvedValueOnce(10);
       Student.findOne.mockResolvedValueOnce(null);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10, isActive: true }),
       });
 
       const res = await api('post', '/api/students').send({
@@ -191,7 +196,7 @@ describe('Student Quota (#680)', () => {
       Student.countDocuments.mockResolvedValueOnce(15);
       Student.findOne.mockResolvedValueOnce(null);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10, isActive: true }),
       });
 
       const res = await api('post', '/api/students').send({
@@ -209,7 +214,7 @@ describe('Student Quota (#680)', () => {
     test('201 — imports all students when under quota', async () => {
       Student.countDocuments.mockResolvedValueOnce(0);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 100 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 100, isActive: true }),
       });
       Student.insertMany.mockResolvedValueOnce([
         { studentId: 'STU001', name: 'Alice', class: 'Grade 5A', feeAmount: 250 },
@@ -231,7 +236,7 @@ describe('Student Quota (#680)', () => {
     test('201 — partial import when spanning quota boundary', async () => {
       Student.countDocuments.mockResolvedValueOnce(8);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10, isActive: true }),
       });
       Student.insertMany.mockResolvedValueOnce([
         { studentId: 'STU009', name: 'Alice', class: 'Grade 5A', feeAmount: 250 },

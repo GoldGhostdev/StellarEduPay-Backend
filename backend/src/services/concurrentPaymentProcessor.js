@@ -578,7 +578,7 @@ class ConcurrentPaymentProcessor {
   async processBatch(payments, options = {}) {
     const results = [];
     const concurrencyLimit = options.concurrencyLimit || 10;
-    const queueFullRetryDelayMs = options.queueFullRetryDelayMs || 500;
+    const queueFullRetryDelayMs = options.queueFullRetryDelayMs !== undefined ? options.queueFullRetryDelayMs : 500;
 
     for (let i = 0; i < payments.length; i += concurrencyLimit) {
       const batch = payments.slice(i, i + concurrencyLimit);

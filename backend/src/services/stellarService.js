@@ -14,6 +14,7 @@ const { validatePaymentAmount } = require("../utils/paymentLimits");
 const { withStellarRetry } = require("../utils/withStellarRetry");
 const { savePayment } = require("./transactionService");
 const { deriveCorrelationId } = require("../utils/correlationId");
+const { CONFIRMATION_STATES } = require("./paymentConfirmationStateMachine");
 const logger = require("../utils/logger").child("StellarService");
 
 function detectAsset(payOp) {

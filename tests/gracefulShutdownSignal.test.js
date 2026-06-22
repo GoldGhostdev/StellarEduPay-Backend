@@ -1,7 +1,7 @@
 'use strict';
 
 process.env.MONGO_URI = 'mongodb://localhost:27017/test';
-process.env.SCHOOL_WALLET_ADDRESS = 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B';
+process.env.SCHOOL_WALLET_ADDRESS = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 
 describe('SIGTERM graceful shutdown', () => {
   let mockServer;
@@ -24,11 +24,25 @@ describe('SIGTERM graceful shutdown', () => {
       const expressApp = {
         use: jest.fn(),
         get: jest.fn(),
+        post: jest.fn(),
+        put: jest.fn(),
+        delete: jest.fn(),
         set: jest.fn(),
         listen: jest.fn(() => mockServer),
       };
+      const mockRouter = {
+        use: jest.fn(),
+        get: jest.fn(),
+        post: jest.fn(),
+        put: jest.fn(),
+        delete: jest.fn(),
+        patch: jest.fn(),
+      };
       const express = jest.fn(() => expressApp);
       express.json = jest.fn(() => jest.fn());
+      express.Router = jest.fn(() => mockRouter);
+      express.urlencoded = jest.fn(() => jest.fn());
+      express.static = jest.fn(() => jest.fn());
       return express;
     });
 
@@ -118,11 +132,11 @@ describe('SIGTERM graceful shutdown', () => {
     jest.doMock('../backend/src/routes/adminRoutes', () => ({}));
     jest.doMock('../backend/src/routes/authRoutes', () => ({}));
 
-    jest.doMock('../backend/src/utils/logger', () => ({
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-    }));
+    jest.doMock('../backend/src/utils/logger', () => {
+      const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+      log.child = jest.fn(() => log);
+      return log;
+    });
 
     jest.doMock('../backend/src/utils/corsOrigins', () => ({
       parseAllowedOrigins: jest.fn(() => []),

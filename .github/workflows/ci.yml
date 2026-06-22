@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# GitHub deprecated the Node.js 20 runtime for actions on 2026-06-16.
+# This flag forces legacy Node.js 20 action runtimes to run under Node.js 24
+# until the underlying actions publish native Node.js 24 releases.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -14,6 +20,9 @@ jobs:
       # Tests mock Mongoose — a standalone instance is sufficient for unit tests.
       # Integration tests that require a replica set are guarded by RUN_INTEGRATION_TESTS.
       MONGO_URI: mongodb://localhost:27017/stellaredupay_test
+      # Dummy secrets required by config/index.js validation before test files can set them.
+      JWT_SECRET: ci-test-jwt-secret-not-used-in-production
+      SCHOOL_WALLET_ADDRESS: GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
 
     services:
       mongodb:
@@ -21,7 +30,7 @@ jobs:
         ports:
           - 27017:27017
         options: >-
-          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-cmd "mongosh --eval 'db.adminCommand({ping:1})'"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -40,8 +49,8 @@ jobs:
             frontend/node_modules
             node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys:
-            - ${{ runner.os }}-node-
+          restore-keys: |
+            ${{ runner.os }}-node-
 
       - run: npm ci
 

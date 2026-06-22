@@ -3,6 +3,7 @@
 const mongoose = require('mongoose');
 const softDelete = require('../utils/softDelete');
 const memoEncryption = require('../utils/memoEncryption');
+const tenantScope = require('../plugins/tenantScope');
 const {
   CONFIRMATION_STATES,
   CONFIRMATION_STATE_TRANSITIONS,

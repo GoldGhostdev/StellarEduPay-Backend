@@ -6,17 +6,26 @@ const { generateReport } = require('../backend/src/services/reportService');
 const Payment = require('../backend/src/models/paymentModel');
 const Student = require('../backend/src/models/studentModel');
 
+const TEST_DB = 'report_date_range_test';
+const USE_EXTERNAL_MONGO = !!process.env.MONGO_URI;
+
 describe('Report date range handling (#649)', () => {
   let mongoServer;
 
   beforeAll(async () => {
-    mongoServer = await MongoMemoryServer.create();
-    await mongoose.connect(mongoServer.getUri());
+    if (USE_EXTERNAL_MONGO) {
+      const baseUri = process.env.MONGO_URI.replace(/\/[^/?]+(\?|$)/, `/${TEST_DB}$1`);
+      await mongoose.connect(baseUri);
+    } else {
+      mongoServer = await MongoMemoryServer.create();
+      await mongoose.connect(mongoServer.getUri());
+    }
   });
 
   afterAll(async () => {
+    await mongoose.connection.db.dropDatabase();
     await mongoose.disconnect();
-    await mongoServer.stop();
+    if (mongoServer) await mongoServer.stop();
   });
 
   beforeEach(async () => {
