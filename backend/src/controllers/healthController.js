@@ -6,6 +6,7 @@ const config = require('../config');
 const { concurrentPaymentProcessor } = require('../services/concurrentPaymentProcessor');
 const { getReminderStatus } = require('../services/reminderService');
 const { getCachedRates } = require('../services/currencyConversionService');
+const { getRedisStatus } = require('../config/redisClient');
 const logger = require('../utils/logger');
 
 const STELLAR_CHECK_TIMEOUT_MS = 3000; // 3 second timeout for Stellar health check
@@ -43,23 +44,26 @@ async function healthCheck(req, res) {
   // - healthy: DB is up AND Stellar is ok
   // - degraded: DB is up BUT Stellar is unreachable
   // - unhealthy: DB is down
+  const retrySelector = require('../services/retryServiceSelector');
+  const retryBackend = retrySelector.getSelectedBackend();
+  const redisStatus = getRedisStatus();
+  const redisConfigured = Boolean(redisStatus.configured);
+
   let overallStatus = 'healthy';
   let statusCode = 200;
 
   if (db.healthy !== true) {
     overallStatus = 'unhealthy';
     statusCode = 503;
+  } else if (redisConfigured && redisStatus.status !== 'ready') {
+    overallStatus = 'degraded';
+    statusCode = 200;
   } else if (stellar.status !== 'ok') {
     overallStatus = 'degraded';
     statusCode = 200; // Still return 200 since DB is up and cached data can be served
   }
 
   const { queueDepth, maxQueueDepth } = concurrentPaymentProcessor.getStats();
-
-  // Retry queue backend info
-  const retrySelector = require('../services/retryServiceSelector');
-  const retryBackend = retrySelector.getSelectedBackend();
-  const redisConfigured = Boolean(process.env.REDIS_HOST);
 
   // Price feed status
   const cachedRates = getCachedRates();
@@ -101,7 +105,10 @@ async function healthCheck(req, res) {
       retryQueue: {
         backend: retryBackend || 'not_started',
         redisConfigured,
+        redisStatus: redisStatus.status,
         ...(redisConfigured && { redisHost: process.env.REDIS_HOST }),
+        ...(redisStatus.reason && { error: redisStatus.reason }),
+        ...(redisStatus.lastUpdatedAt && { lastUpdatedAt: redisStatus.lastUpdatedAt }),
       },
       priceFeed: {
         available: priceFeedStatus.length > 0,
