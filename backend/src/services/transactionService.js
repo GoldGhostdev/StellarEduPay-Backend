@@ -38,6 +38,7 @@ async function savePayment(data) {
       err.code = "DUPLICATE_TX";
       logger.warn("Duplicate transaction rejected", {
         txHash: data.transactionHash,
+        correlationId: data.correlationId,
         schoolId: data.schoolId,
       });
       throw err;
@@ -45,6 +46,7 @@ async function savePayment(data) {
     logger.error("Failed to record payment", {
       error: e.message,
       txHash: data.transactionHash,
+      correlationId: data.correlationId,
       schoolId: data.schoolId,
     });
     throw e;
