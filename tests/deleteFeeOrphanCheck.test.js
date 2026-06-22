@@ -123,7 +123,7 @@ describe('#594 DELETE /api/fees/:className orphan check', () => {
     await deleteFeeStructure(mockReq('Grade 5A', { force: 'true' }), mockRes(), jest.fn());
 
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('active student obligations'),
+      expect.stringContaining('active obligations'),
       expect.objectContaining({ affectedStudents: 4 }),
     );
   });

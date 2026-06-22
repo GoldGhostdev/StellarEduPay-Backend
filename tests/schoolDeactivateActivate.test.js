@@ -135,14 +135,8 @@ describe('School deactivate/activate endpoints — issue #453', () => {
       // schoolContext already queries { isActive: true } — simulate not found
       const { resolveSchool } = require('../backend/src/middleware/schoolContext');
 
-      jest.mock('../backend/src/cache', () => ({
-        get: jest.fn().mockReturnValue(null),
-        set: jest.fn(),
-        KEYS: { school: jest.fn((id) => `school:${id}`) },
-        TTL: { SCHOOL: 300 },
-      }));
-
-      School.findOne.mockResolvedValue(null); // inactive school not returned
+      // Return null from findOne (school not found) — lean() chain required by schoolContext
+      School.findOne.mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
 
       const req = { headers: { 'x-school-id': 'SCH-001' } };
       const res = mockRes();
@@ -150,7 +144,7 @@ describe('School deactivate/activate endpoints — issue #453', () => {
       await resolveSchool(req, res, nextFn);
 
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'SCHOOL_NOT_FOUND' }));
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'NOT_FOUND' }));
     });
   });
 

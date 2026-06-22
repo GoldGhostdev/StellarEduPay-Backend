@@ -33,7 +33,13 @@ jest.mock('../backend/src/models/feeStructureModel', () => ({
 }));
 
 jest.mock('../backend/src/models/schoolModel', () => ({
-  findOne: jest.fn(),
+  findOne: jest.fn().mockReturnValue({
+    lean: jest.fn().mockResolvedValue({
+      schoolId: 'school-a', name: 'Test School', slug: 'school-a',
+      stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+      isActive: true,
+    }),
+  }),
   find: jest.fn(),
   create: jest.fn(),
   findByIdAndUpdate: jest.fn(),

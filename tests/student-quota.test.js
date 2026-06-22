@@ -150,7 +150,7 @@ describe('Student Quota (#680)', () => {
       Student.countDocuments.mockResolvedValueOnce(5);
       Student.findOne.mockResolvedValueOnce(null);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10, isActive: true }),
       });
       Student.create.mockResolvedValueOnce({
         studentId: 'STU001',
@@ -174,7 +174,7 @@ describe('Student Quota (#680)', () => {
       Student.countDocuments.mockResolvedValueOnce(10);
       Student.findOne.mockResolvedValueOnce(null);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10, isActive: true }),
       });
 
       const res = await api('post', '/api/students').send({
@@ -191,7 +191,7 @@ describe('Student Quota (#680)', () => {
       Student.countDocuments.mockResolvedValueOnce(15);
       Student.findOne.mockResolvedValueOnce(null);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10, isActive: true }),
       });
 
       const res = await api('post', '/api/students').send({
@@ -209,7 +209,7 @@ describe('Student Quota (#680)', () => {
     test('201 — imports all students when under quota', async () => {
       Student.countDocuments.mockResolvedValueOnce(0);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 100 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 100, isActive: true }),
       });
       Student.insertMany.mockResolvedValueOnce([
         { studentId: 'STU001', name: 'Alice', class: 'Grade 5A', feeAmount: 250 },
@@ -231,7 +231,7 @@ describe('Student Quota (#680)', () => {
     test('201 — partial import when spanning quota boundary', async () => {
       Student.countDocuments.mockResolvedValueOnce(8);
       School.findOne.mockReturnValueOnce({
-        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10 }),
+        lean: jest.fn().mockResolvedValueOnce({ schoolId: 'SCH001', maxStudents: 10, isActive: true }),
       });
       Student.insertMany.mockResolvedValueOnce([
         { studentId: 'STU009', name: 'Alice', class: 'Grade 5A', feeAmount: 250 },

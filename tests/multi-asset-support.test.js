@@ -21,14 +21,16 @@ jest.mock('../backend/src/middleware/auth', () => ({
 jest.mock('../backend/src/models/schoolModel', () => {
   const mockSchool = {
     _id: 'sch-001',
+    schoolId: 'sch-001',
     slug: 'test-school',
     name: 'Test School',
     stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
     acceptedAssets: ['XLM', 'USDC'],
+    isActive: true,
     save: jest.fn().mockResolvedValue(true),
   };
   return {
-    findOne: jest.fn().mockResolvedValue(mockSchool),
+    findOne: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue(mockSchool) }),
     findOneAndUpdate: jest.fn().mockResolvedValue(mockSchool),
     create: jest.fn().mockResolvedValue(mockSchool),
   };

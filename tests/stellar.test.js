@@ -52,6 +52,7 @@ jest.mock('../backend/src/config/stellarConfig', () => ({
         call: async () => ({
           hash: txHash,
           memo: 'STU001',
+          memo_type: 'text',
           successful: true,
           created_at: new Date().toISOString(),
           operations: mockOperations,

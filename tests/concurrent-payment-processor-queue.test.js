@@ -144,8 +144,6 @@ describe('ConcurrentPaymentProcessor – queue depth backpressure', () => {
 
   describe('processBatch', () => {
     test('retries QUEUE_FULL items until they succeed', async () => {
-      jest.useFakeTimers();
-
       const processor = new ConcurrentPaymentProcessor({ maxQueueDepth: 10 });
 
       // processPayment returns QUEUE_FULL on first call, succeeds on second
@@ -159,21 +157,16 @@ describe('ConcurrentPaymentProcessor – queue depth backpressure', () => {
         .mockResolvedValueOnce(queueFullResult)
         .mockResolvedValueOnce(successResult);
 
-      const batchPromise = processor.processBatch(
+      // Use 0ms retry delay so no fake timers are needed — the setTimeout fires
+      // on the next event-loop tick and the await resolves normally.
+      const batchResult = await processor.processBatch(
         [makePaymentData(1)],
-        { ...makeOptions(1), queueFullRetryDelayMs: 100 }
+        { ...makeOptions(1), queueFullRetryDelayMs: 0 }
       );
-
-      // Advance past the retry delay
-      await jest.runAllTimersAsync();
-
-      const batchResult = await batchPromise;
 
       expect(spy).toHaveBeenCalledTimes(2);
       expect(batchResult.successful).toBe(1);
       expect(batchResult.failed).toBe(0);
-
-      jest.useRealTimers();
     });
 
     test('reports failure for non-QUEUE_FULL errors without retrying', async () => {

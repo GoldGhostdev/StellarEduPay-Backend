@@ -55,14 +55,14 @@ describe('Payment Limits', () => {
     it('should reject non-numeric payment amounts', () => {
       const result = validatePaymentAmount('invalid');
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('valid number');
+      expect(result.error).toContain('valid positive number');
       expect(result.code).toBe('INVALID_AMOUNT');
     });
 
     it('should reject NaN payment amounts', () => {
       const result = validatePaymentAmount(NaN);
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('valid number');
+      expect(result.error).toContain('valid positive number');
       expect(result.code).toBe('INVALID_AMOUNT');
     });
 

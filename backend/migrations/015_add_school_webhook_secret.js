@@ -17,7 +17,7 @@ const mongoose = require('mongoose');
 const VERSION = '015_add_school_webhook_secret';
 
 async function up() {
-  const collection = mongoose.connection.collection('schools');
+  const collection = mongoose.connection.db.collection('schools');
 
   // Find all schools without a webhookSecret field
   const schools = await collection.find({ webhookSecret: { $exists: false } }).toArray();
@@ -42,7 +42,7 @@ async function up() {
 }
 
 async function down() {
-  const collection = mongoose.connection.collection('schools');
+  const collection = mongoose.connection.db.collection('schools');
 
   // Remove webhookSecret from all schools (rollback)
   const result = await collection.updateMany(
