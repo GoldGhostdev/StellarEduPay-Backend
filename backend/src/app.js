@@ -51,7 +51,7 @@ const { requestLogger } = require('./middleware/requestLogger');
 const { createConcurrentRequestMiddleware } = require('./middleware/concurrentRequestHandler');
 const { requireAdminAuth } = require('./middleware/auth');
 const { runConsistencyCheck } = require('./controllers/consistencyController');
-const { healthCheck, livenessCheck, readinessCheck } = require('./controllers/healthController');
+const { healthCheck, healthLive, healthReady } = require('./controllers/healthController');
 const logger = require('./utils/logger');
 const { startHeapMonitoring } = require('./utils/heapMonitoring');
 
@@ -121,8 +121,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/auth', authRoutes);
 app.get('/api/consistency', requireAdminAuth, runConsistencyCheck);
 app.get('/health', healthCheck);
-app.get('/health/live', livenessCheck);
-app.get('/health/ready', readinessCheck);
+app.get('/health/live', healthLive);
+app.get('/health/ready', healthReady);
 
 // Issue #671: OpenAPI/Swagger documentation
 try {

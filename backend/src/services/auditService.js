@@ -119,56 +119,26 @@ async function getAuditLogs(filters = {}) {
     if (endDate) baseQuery.createdAt.$lte = new Date(endDate);
   }
 
-  const actualLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
+  const actualLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+  const actualPage = Math.max(parseInt(page, 10) || 1, 1);
+  const skip = (actualPage - 1) * actualLimit;
 
-  if (cursor) {
-    // Cursor-based pagination: decode the cursor to get { createdAt, _id }
-    // and page forward using a range predicate on the compound index.
-    let cursorData;
-    try {
-      cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8'));
-    } catch {
-      const err = new Error('Invalid pagination cursor');
-      err.code = 'INVALID_CURSOR';
-      throw err;
-    }
-
-    const query = { ...baseQuery };
-    // Continue from where the previous page left off. Documents are sorted
-    // { createdAt: -1 }, so "next page" means createdAt < cursorCreatedAt,
-    // or same createdAt with a smaller _id (tie-break).
-    query.$or = [
-      { createdAt: { $lt: new Date(cursorData.createdAt) } },
-      {
-        createdAt: new Date(cursorData.createdAt),
-        _id: { $lt: cursorData._id },
-      },
-    ];
-
-    const logs = await AuditLog.find(query)
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(actualLimit)
-      .lean();
-
-    const nextCursor =
-      logs.length === actualLimit
-        ? Buffer.from(
-            JSON.stringify({
-              createdAt: logs[logs.length - 1].createdAt,
-              _id: logs[logs.length - 1]._id,
-            }),
-          ).toString('base64')
-        : null;
-
-    return { logs, limit: actualLimit, nextCursor };
+  // Select the most specific compound index to avoid COLLSCAN
+  let indexHint;
+  if (action) {
+    indexHint = { schoolId: 1, action: 1, createdAt: -1 };
+  } else if (performedBy) {
+    indexHint = { schoolId: 1, performedBy: 1, createdAt: -1 };
+  } else if (targetType) {
+    indexHint = { schoolId: 1, targetType: 1, createdAt: -1 };
+  } else {
+    indexHint = { schoolId: 1, createdAt: -1 };
   }
 
-  // Offset-based pagination (page/limit) — kept for backward compatibility.
-  const skip = (page - 1) * actualLimit;
-
   const [logs, total] = await Promise.all([
-    AuditLog.find(baseQuery)
-      .sort({ createdAt: -1, _id: -1 })
+    AuditLog.find(query)
+      .hint(indexHint)
+      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(actualLimit)
       .lean(),
@@ -188,7 +158,7 @@ async function getAuditLogs(filters = {}) {
   return {
     logs,
     total,
-    page,
+    page: actualPage,
     limit: actualLimit,
     pages: Math.ceil(total / actualLimit) || 1,
     nextCursor,

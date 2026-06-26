@@ -117,17 +117,20 @@ paymentSchema.virtual('stellarExplorerUrl').get(function () {
 });
 
 /**
- * Allowed manual status transitions, mirroring the controller's ALLOWED_TRANSITIONS.
- * This table is the single source of truth for model-level transition validation.
+ * Allowed status transitions for normal and admin-authorized paths.
  *
- * SUCCESS   → DISPUTED  : admin marks a confirmed payment as disputed
- * PENDING   → FAILED    : admin manually fails a stuck pending payment
- * SUBMITTED → FAILED    : admin manually fails a stuck submitted payment
+ * Normal transitions (enforced by the pre-save hook):
+ *   SUCCESS   → DISPUTED  : admin marks a confirmed payment as disputed
+ *   SUCCESS   → REFUNDED  : admin marks a confirmed payment as refunded
+ *   PENDING   → FAILED    : admin manually fails a stuck pending payment
+ *   SUBMITTED → FAILED    : admin manually fails a stuck submitted payment
  *
- * All other transitions (e.g. FAILED → SUCCESS) are explicitly disallowed.
+ * All other transitions are rejected with INVALID_TRANSITION.
+ * Callers with legitimate admin authority may set `payment.$locals.adminOverride = true`
+ * before calling .save() to bypass the guard; the override is audited by the caller.
  */
 const PAYMENT_STATUS_TRANSITIONS = {
-  SUCCESS:   ['DISPUTED'],
+  SUCCESS:   ['DISPUTED', 'REFUNDED'],
   PENDING:   ['FAILED'],
   SUBMITTED: ['FAILED'],
 };
@@ -159,19 +162,18 @@ paymentSchema.pre('save', function (next) {
     const newStatus = this.status;
 
     if (originalStatus !== null && originalStatus !== newStatus) {
-      // When adminOverride is set the caller is responsible for auditing the
-      // action; the model enforces the wider admin-allowed transition table.
-      const transitionTable = this._adminOverride
-        ? ADMIN_PAYMENT_STATUS_TRANSITIONS
-        : PAYMENT_STATUS_TRANSITIONS;
-
-      const allowed = transitionTable[originalStatus] || [];
-      if (!allowed.includes(newStatus)) {
-        const err = new Error(
-          `Payment status transition from ${originalStatus} to ${newStatus} is not allowed`,
-        );
-        err.code = 'INVALID_TRANSITION';
-        return next(err);
+      // Callers with admin authority may set $locals.adminOverride = true to
+      // bypass the guard for legitimate operations (e.g. SUCCESS → REFUNDED).
+      // The override must be audited explicitly by the caller.
+      if (!this.$locals || !this.$locals.adminOverride) {
+        const allowed = PAYMENT_STATUS_TRANSITIONS[originalStatus] || [];
+        if (!allowed.includes(newStatus)) {
+          const err = new Error(
+            `Payment status transition from ${originalStatus} to ${newStatus} is not allowed`,
+          );
+          err.code = 'INVALID_TRANSITION';
+          return next(err);
+        }
       }
     }
 

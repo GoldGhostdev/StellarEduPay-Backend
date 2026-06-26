@@ -101,72 +101,62 @@ async function updateFeeStructure(req, res, next) {
       const Payment = require('../models/paymentModel');
       const StudentFeeHistory = require('../models/studentFeeHistoryModel');
 
-      const students = await Student.find({ schoolId: req.schoolId, class: className, deletedAt: null }).lean();
+      const session = await mongoose.connection.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const students = await Student.find({ schoolId: req.schoolId, class: className, deletedAt: null }).session(session);
 
-      if (students.length > 0) {
-        const studentIds = students.map(s => s.studentId);
+          if (students.length > 0) {
+            const studentIds = students.map(s => s.studentId);
 
-        // Aggregate confirmed payments for all affected students in one query.
-        const confirmedAgg = await Payment.aggregate([
-          {
-            $match: {
-              schoolId: req.schoolId,
-              studentId: { $in: studentIds },
-              status: 'SUCCESS',
-              deletedAt: null,
-            },
-          },
-          { $group: { _id: '$studentId', totalConfirmed: { $sum: '$amount' } } },
-        ]);
+            // Aggregate confirmed payment totals per student from authoritative source
+            const paymentTotals = await Payment.aggregate([
+              { $match: { schoolId: req.schoolId, studentId: { $in: studentIds }, status: 'SUCCESS' } },
+              { $group: { _id: '$studentId', amountPaid: { $sum: '$amount' } } },
+            ]).session(session);
 
-        const confirmedByStudent = {};
-        for (const entry of confirmedAgg) {
-          confirmedByStudent[entry._id] = entry.totalConfirmed;
-        }
+            const paidByStudentId = new Map(paymentTotals.map(p => [p._id, p.amountPaid]));
 
-        const bulkStudentOps = [];
-        const historyDocs = [];
-
-        for (const s of students) {
-          const amountPaid = confirmedByStudent[s.studentId] || 0;
-          const newRemainingBalance = Math.max(0, feeAmount - amountPaid);
-          const newFeePaid = amountPaid >= feeAmount;
-
-          bulkStudentOps.push({
-            updateOne: {
-              filter: { _id: s._id },
-              update: {
-                $set: {
-                  feeAmount,
-                  remainingBalance: newRemainingBalance,
-                  feePaid: newFeePaid,
+            const bulkOps = students.map(s => {
+              const amountPaid = paidByStudentId.get(s.studentId) || 0;
+              const remainingBalance = Math.max(0, feeAmount - amountPaid);
+              return {
+                updateOne: {
+                  filter: { _id: s._id, schoolId: req.schoolId },
+                  update: {
+                    $set: {
+                      feeAmount,
+                      totalPaid: amountPaid,
+                      remainingBalance,
+                      feePaid: amountPaid >= feeAmount,
+                    },
+                  },
                 },
-              },
-            },
-          });
+              };
+            });
 
-          historyDocs.push({
-            schoolId: req.schoolId,
-            studentId: s.studentId,
-            category: 'fee_cascade_update',
-            amount: feeAmount,
-            paid: newFeePaid,
-            totalPaid: amountPaid,
-            remainingBalance: newRemainingBalance,
-          });
-        }
+            await Student.bulkWrite(bulkOps, { session });
 
-        const session = await mongoose.startSession();
-        try {
-          await session.withTransaction(async () => {
-            await Student.bulkWrite(bulkStudentOps, { session });
+            const historyDocs = students.map(s => {
+              const amountPaid = paidByStudentId.get(s.studentId) || 0;
+              const remainingBalance = Math.max(0, feeAmount - amountPaid);
+              return {
+                schoolId: req.schoolId,
+                studentId: s.studentId,
+                category: className,
+                amount: feeAmount,
+                paid: amountPaid >= feeAmount,
+                totalPaid: amountPaid,
+                remainingBalance,
+              };
+            });
+
             await StudentFeeHistory.insertMany(historyDocs, { session });
-          });
-        } finally {
-          await session.endSession();
-        }
-
-        studentsUpdated = bulkStudentOps.length;
+            studentsUpdated = students.length;
+          }
+        });
+      } finally {
+        session.endSession();
       }
     }
 

@@ -157,20 +157,19 @@ async function healthCheck(req, res) {
 
 /**
  * GET /health/live
- * Liveness probe — returns 200 as long as the process is running.
- * Orchestrators (e.g. Kubernetes) restart the pod when this fails.
+ * Liveness probe: returns 200 if the process is running and responsive.
+ * No external dependency checks — if this fails, the container should restart.
  */
-function livenessCheck(req, res) {
+async function healthLive(req, res) {
   return res.status(200).json({ status: 'alive', timestamp: new Date().toISOString() });
 }
 
 /**
  * GET /health/ready
- * Readiness probe — returns 200 only when the service can handle traffic:
- * the database must be reachable and Stellar Horizon must be responsive.
- * Orchestrators stop routing traffic to the instance when this returns non-200.
+ * Readiness probe: returns 200 only when the service can handle traffic.
+ * Checks DB and Horizon; returns 503 if either is unavailable.
  */
-async function readinessCheck(req, res) {
+async function healthReady(req, res) {
   const [dbResult, stellarResult] = await Promise.allSettled([
     database.healthCheck(),
     checkStellar(),
@@ -186,27 +185,22 @@ async function readinessCheck(req, res) {
       ? stellarResult.value
       : { status: 'unreachable', error: stellarResult.reason?.message };
 
-  const redisStatus = getRedisStatus();
-  const redisConfigured = Boolean(redisStatus.configured);
-
-  const ready =
-    db.healthy === true &&
-    stellar.status === 'ok' &&
-    (!redisConfigured || redisStatus.status === 'ready');
-
+  const ready = db.healthy === true && stellar.status === 'ok';
   const statusCode = ready ? 200 : 503;
 
   return res.status(statusCode).json({
-    ready,
+    status: ready ? 'ready' : 'not_ready',
     timestamp: new Date().toISOString(),
     checks: {
-      database: db.healthy ? 'ok' : 'fail',
-      stellar: stellar.status,
-      ...(stellar.activeUrl && { horizonEndpoint: stellar.activeUrl }),
-      ...(stellar.endpoints && { circuitState: stellar.endpoints }),
-      ...(redisConfigured && { redis: redisStatus.status }),
+      database: { status: db.healthy ? 'healthy' : 'unhealthy', ...(db.reason && { error: db.reason }) },
+      stellar: {
+        status: stellar.status,
+        activeEndpoint: stellar.activeUrl || config.HORIZON_URL,
+        endpoints: stellar.endpoints || [],
+        ...(stellar.error && { error: stellar.error }),
+      },
     },
   });
 }
 
-module.exports = { healthCheck, livenessCheck, readinessCheck };
+module.exports = { healthCheck, healthLive, healthReady };
