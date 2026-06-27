@@ -128,6 +128,18 @@ jest.mock('../backend/src/services/auditService', () => ({
   logAudit: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../backend/src/config/stellarConfig', () => ({
+  server: { transactions: jest.fn(), ledgers: jest.fn() },
+  SCHOOL_WALLET: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  isAcceptedAsset: jest.fn((code) => ({ accepted: ['XLM', 'USDC'].includes(code) })),
+  ACCEPTED_ASSETS: {
+    XLM: { code: 'XLM', type: 'native', displayName: 'Stellar Lumens' },
+    USDC: { code: 'USDC', type: 'credit_alphanum4', displayName: 'USD Coin', issuer: 'GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTQSXUSMIQSTBE2EURIDVXL6B' },
+  },
+  CONFIRMATION_THRESHOLD: 3,
+  FINALIZATION_THRESHOLD: 10,
+}));
+
 const app = require('../backend/src/app');
 
 const SCHOOL_HEADERS = { 'X-School-ID': 'SCH001' };

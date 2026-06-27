@@ -670,6 +670,8 @@ describe('Duplicate Student Detection', () => {
 
   test('POST /api/students — 201 without warning for unique student', async () => {
     const Student = require('../backend/src/models/studentModel');
+    const FeeStructure = require('../backend/src/models/feeStructureModel');
+    FeeStructure.findOne.mockResolvedValueOnce({ className: '7A', feeAmount: 300 });
     Student.findOne.mockResolvedValueOnce(null); // no exact match
     Student.findOne.mockResolvedValueOnce(null); // no soft-deleted match
     Student.findOne.mockResolvedValueOnce(null); // no fuzzy match
