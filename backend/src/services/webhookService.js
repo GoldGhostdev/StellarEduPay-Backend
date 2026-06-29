@@ -2,6 +2,7 @@
 
 const axios = require('axios');
 const crypto = require('crypto');
+const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 const WebhookRetry = require('../models/webhookRetryModel');
 const { validateWebhookUrl } = require('../utils/validateWebhookUrl');
@@ -9,14 +10,8 @@ const { validateWebhookUrl } = require('../utils/validateWebhookUrl');
 const WEBHOOK_TIMEOUT_MS = 10000; // 10 second timeout
 
 // ── Replay protection ────────────────────────────────────────────────────────
-// Delivered delivery IDs are stored (in-process or Redis) for REPLAY_WINDOW_S
-// seconds. Any webhook whose delivery ID is already in the store is rejected.
-const REPLAY_WINDOW_S = parseInt(process.env.WEBHOOK_REPLAY_WINDOW_S || '300', 10); // 5 min default
+const REPLAY_WINDOW_S = parseInt(process.env.WEBHOOK_REPLAY_WINDOW_S || '300', 10);
 
-/**
- * In-process nonce store: Map<deliveryId, expiresAt (ms)>.
- * Used when Redis is not configured. Entries are evicted lazily on each check.
- */
 const _localNonces = new Map();
 
 function _evictExpiredNonces() {
@@ -26,52 +21,131 @@ function _evictExpiredNonces() {
   }
 }
 
-/**
- * Check if a delivery ID has been seen before (replay detection).
- * Stores the ID if it is fresh.
- *
- * @param {string} deliveryId
- * @returns {Promise<boolean>} true if this is a REPLAY (already seen), false if fresh
- */
 async function _isReplay(deliveryId) {
   const { getRedisClient, isRedisReady } = require('../config/redisClient');
   if (isRedisReady()) {
     const redis = getRedisClient();
     const key = `webhook:nonce:${deliveryId}`;
-    // SET NX EX — only sets if the key does not exist; returns 'OK' or null
     const result = await redis.set(key, '1', 'EX', REPLAY_WINDOW_S, 'NX');
-    return result === null; // null means key already existed → replay
+    return result === null;
   }
-
-  // In-process fallback
   _evictExpiredNonces();
   if (_localNonces.has(deliveryId)) return true;
   _localNonces.set(deliveryId, Date.now() + REPLAY_WINDOW_S * 1000);
   return false;
 }
 
-/** Exposed for testing — clears the local nonce store. */
 function _resetNonces() { _localNonces.clear(); }
+
+// ── Backoff schedule — Issue #73 ─────────────────────────────────────────────
+//
+// Defaults: 1 m, 5 m, 15 m, 30 m, 1 h, 2 h, 4 h, 8 h
+// Override the schedule with WEBHOOK_RETRY_DELAYS_MS (comma-separated ms values).
+// Override the maximum attempts with WEBHOOK_MAX_ATTEMPTS.
+//
+// Full jitter is applied to every delay to spread thundering-herd retries:
+//   jitteredDelay = random(0, baseDelay)   (full-jitter strategy)
+// This keeps average latency at ½ × baseDelay while eliminating synchronized waves.
+
+const _defaultDelays = [
+  60_000,        // 1 min
+  300_000,       // 5 min
+  900_000,       // 15 min
+  1_800_000,     // 30 min
+  3_600_000,     // 1 hour
+  7_200_000,     // 2 hours
+  14_400_000,    // 4 hours
+  28_800_000,    // 8 hours
+];
+
+function _parseDelays() {
+  const raw = process.env.WEBHOOK_RETRY_DELAYS_MS;
+  if (!raw) return _defaultDelays;
+  const parsed = raw.split(',')
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => !isNaN(n) && n > 0);
+  return parsed.length > 0 ? parsed : _defaultDelays;
+}
+
+const BACKOFF_DELAYS = _parseDelays();
+
+const DEFAULT_MAX_ATTEMPTS = parseInt(process.env.WEBHOOK_MAX_ATTEMPTS || '8', 10);
+
+/**
+ * Calculate exponential backoff delay with full jitter (Issue #73).
+ *
+ * Full jitter picks a random value in [0, baseDelay]. This avoids synchronised
+ * retry waves when many deliveries fail in the same window ("thundering herd").
+ *
+ * @param {number} attemptNumber - 0-indexed attempt number
+ * @returns {number} Jittered delay in milliseconds
+ */
+function getBackoffDelay(attemptNumber) {
+  const base = BACKOFF_DELAYS[Math.min(attemptNumber, BACKOFF_DELAYS.length - 1)];
+  // Full jitter: uniform random in [0, base]
+  return Math.floor(Math.random() * (base + 1));
+}
+
+// ── Lease / stuck-recovery — Issue #74 ──────────────────────────────────────
+//
+// LEASE_TIMEOUT_MS: how long a 'processing' lease is considered valid. After
+// this duration, processPendingRetries() will reset the document to 'pending'
+// so another worker can pick it up. Must be comfortably larger than
+// WEBHOOK_TIMEOUT_MS to avoid false recovery while the HTTP call is in flight.
+const LEASE_TIMEOUT_MS = parseInt(
+  process.env.WEBHOOK_LEASE_TIMEOUT_MS || String(WEBHOOK_TIMEOUT_MS * 3),
+  10,
+);
+
+// Stable worker identifier used as leasedBy. Survives across retry ticks
+// within the same process; helps ops trace which replica held a lease.
+const WORKER_ID = `${os.hostname()}:${process.pid}`;
+
+// ── Signing secret resolution — Issue #75 ────────────────────────────────────
+//
+// Secrets are no longer stored on the WebhookRetry document. Instead, the
+// service looks up the school's (encrypted) webhookSecret from the School
+// collection at send time using the schoolId stored on the retry document.
+// This ensures a DB read (or backup leak) of the retry queue does not expose
+// signing secrets.
+
+/**
+ * Resolve the HMAC signing secret for a webhook delivery.
+ *
+ * If a schoolId is provided, the secret is fetched from the School document.
+ * Falls back to the provided `fallbackSecret` argument (used for first-attempt
+ * deliveries where the secret is passed in directly but not persisted).
+ *
+ * @param {string|null} schoolId
+ * @param {string|null} fallbackSecret - Only used when no schoolId is known
+ * @returns {Promise<string|null>}
+ */
+async function _resolveSecret(schoolId, fallbackSecret = null) {
+  if (!schoolId) return fallbackSecret;
+  try {
+    const School = require('../models/schoolModel');
+    const { decryptWebhookSecret } = require('./webhookSecretEncryption');
+    const school = await School.findOne({ schoolId }).select('+webhookSecret').lean();
+    if (!school || !school.webhookSecret) return null;
+    return decryptWebhookSecret(school.webhookSecret);
+  } catch (err) {
+    const logger = require('../utils/logger').child('WebhookService');
+    logger.warn('Failed to resolve webhook secret from school', { schoolId, error: err.message });
+    return null;
+  }
+}
+
+const logger = require('../utils/logger').child('WebhookService');
 
 /**
  * Generate HMAC-SHA256 signature for a webhook payload.
- *
- * @param {object} payload - The JSON body sent to the webhook
- * @param {string} secret - The shared secret for this webhook
- * @returns {string} HMAC-SHA256 hex digest
  */
 function generateSignature(payload, secret) {
   return crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');
 }
 
 /**
- * Verify an incoming webhook signature using constant-time comparison
- * to prevent timing attacks.
- *
- * @param {object} payload - Raw request body
- * @param {string} providedSignature - Hex signature from X-StellarEduPay-Signature header
- * @param {string} secret - Shared secret
- * @returns {boolean} true if signature is valid, false otherwise
+ * Verify an incoming webhook signature using constant-time comparison.
  */
 function verifySignature(payload, providedSignature, secret) {
   const expectedSignature = generateSignature(payload, secret);
@@ -81,32 +155,17 @@ function verifySignature(payload, providedSignature, secret) {
   return crypto.timingSafeEqual(expectedBuf, actualBuf);
 }
 
-const logger = require('../utils/logger').child('WebhookService');
-
-/**
- * Calculate exponential backoff delay in milliseconds.
- * Delays: 1 min, 5 min, 15 min
- * 
- * @param {number} attemptNumber - 0-indexed attempt number
- * @returns {number} Delay in milliseconds
- */
-function getBackoffDelay(attemptNumber) {
-  const delays = [60000, 300000, 900000]; // 1 min, 5 min, 15 min
-  return delays[Math.min(attemptNumber, delays.length - 1)];
-}
-
 /**
  * Fire a webhook to an external system when a payment event occurs.
- * On failure, queues for retry with exponential backoff.
  *
- * @param {string} url - The webhook endpoint URL
- * @param {string} event - Event type: 'payment.confirmed' | 'payment.pending' | 'payment.failed' | 'payment.suspicious'
- * @param {object} payload - Event-specific payload data
- * @param {string|null} [secret] - Per-school HMAC secret for signing the delivery
- * @param {string|null} [deliveryId] - Delivery ID for deduplication (generated if not provided)
- * @returns {Promise<{success: boolean, statusCode?: number, error?: string, queued?: boolean, deliveryId: string}>}
+ * @param {string} url
+ * @param {string} event
+ * @param {object} payload
+ * @param {string|null} [secret] - Only used for the first-attempt signature; NOT persisted
+ * @param {string|null} [deliveryId]
+ * @param {string|null} [schoolId] - Required for retry secret resolution (Issue #75)
  */
-async function fireWebhook(url, event, payload, secret = null, deliveryId = null) {
+async function fireWebhook(url, event, payload, secret = null, deliveryId = null, schoolId = null) {
   const correlationId = payload?.correlationId || null;
 
   if (!url) return { success: false, error: 'No webhook URL configured', deliveryId: null };
@@ -120,7 +179,6 @@ async function fireWebhook(url, event, payload, secret = null, deliveryId = null
   const timestamp = Math.floor(Date.now() / 1000);
   const id = deliveryId || uuidv4();
 
-  // Replay protection: reject if this delivery ID has already been processed.
   if (await _isReplay(id)) {
     logger.warn('Webhook replay detected — delivery already processed', { deliveryId: id, event, url, correlationId });
     return { success: false, error: 'Replay detected: delivery already processed', deliveryId: id };
@@ -144,7 +202,6 @@ async function fireWebhook(url, event, payload, secret = null, deliveryId = null
     headers['X-StellarEduPay-Correlation-Id'] = correlationId;
   }
 
-  // Sign the payload when a secret is provided
   if (secret) {
     headers['X-StellarEduPay-Signature'] = `sha256=${generateSignature(body, secret)}`;
   }
@@ -159,12 +216,8 @@ async function fireWebhook(url, event, payload, secret = null, deliveryId = null
 
     const duration = Date.now() - startTime;
     logger.info(`Webhook fired successfully`, {
-      url,
-      event,
-      deliveryId: id,
-      correlationId,
-      statusCode: response.status,
-      durationMs: duration,
+      url, event, deliveryId: id, correlationId,
+      statusCode: response.status, durationMs: duration,
     });
 
     return { success: true, statusCode: response.status, deliveryId: id };
@@ -177,17 +230,13 @@ async function fireWebhook(url, event, payload, secret = null, deliveryId = null
         : err.message;
 
     logger.error(`Webhook failed, queuing for retry`, {
-      url,
-      event,
-      deliveryId: id,
-      correlationId,
-      error: errorMessage,
-      durationMs: duration,
+      url, event, deliveryId: id, correlationId, error: errorMessage, durationMs: duration,
     });
 
-    // Queue for retry (use same deliveryId for deduplication)
     try {
-      await queueWebhookRetry(url, event, payload, errorMessage, secret, id);
+      // schoolId is passed through so retries can resolve the secret at send
+      // time from the School document rather than storing it (Issue #75).
+      await queueWebhookRetry(url, event, payload, errorMessage, schoolId, id);
       return { success: false, error: errorMessage, queued: true, deliveryId: id };
     } catch (queueErr) {
       logger.error(`Failed to queue webhook retry`, { url, event, correlationId, error: queueErr.message });
@@ -197,58 +246,134 @@ async function fireWebhook(url, event, payload, secret = null, deliveryId = null
 }
 
 /**
- * Queue a failed webhook for retry with exponential backoff.
- * 
- * @param {string} url - Webhook URL
- * @param {string} event - Event type
- * @param {object} payload - Event payload
- * @param {string} error - Error message from failed attempt
- * @param {string|null} [secret] - HMAC secret to re-sign on retry
- * @param {string|null} [deliveryId] - Delivery ID for deduplication
+ * Queue a failed webhook for retry.
+ *
+ * The secret is NOT stored on the retry document (Issue #75).
+ * Instead, schoolId is persisted so the secret can be resolved from the
+ * School model at send time.
+ *
+ * @param {string} url
+ * @param {string} event
+ * @param {object} payload
+ * @param {string} error
+ * @param {string|null} [schoolId] - Used to resolve secret at retry time
+ * @param {string|null} [deliveryId]
  */
-async function queueWebhookRetry(url, event, payload, error, secret = null, deliveryId = null) {
-  const nextRetryAt = new Date(Date.now() + getBackoffDelay(0)); // First retry: 1 min
+async function queueWebhookRetry(url, event, payload, error, schoolId = null, deliveryId = null) {
+  const nextRetryAt = new Date(Date.now() + getBackoffDelay(0));
   const id = deliveryId || uuidv4();
 
   await WebhookRetry.create({
     url,
     event,
     payload,
-    secret: secret || null,
+    schoolId: schoolId || null,
+    // NOTE: 'secret' field intentionally omitted (Issue #75).
+    //       The signing secret is resolved from the School document at send time.
     deliveryId: id,
     correlationId: payload?.correlationId || null,
     status: 'pending',
     attemptCount: 0,
-    maxAttempts: 3,
+    maxAttempts: DEFAULT_MAX_ATTEMPTS,
     nextRetryAt,
     lastError: error,
-    errorLog: [
-      {
-        attemptNumber: 0,
-        error,
-        timestamp: new Date(),
-      },
-    ],
+    errorLog: [{ attemptNumber: 0, error, timestamp: new Date() }],
   });
 }
 
 /**
- * Process pending webhook retries.
- * Called periodically by a background job.
+ * Recover stuck processing leases — Issue #74.
+ *
+ * Finds 'processing' documents whose leasedAt is older than LEASE_TIMEOUT_MS
+ * and resets them to 'pending' so another worker can pick them up.
+ *
+ * This runs at the start of each processPendingRetries() tick. Because the
+ * recovery itself uses findOneAndUpdate with a filter on { status:'processing',
+ * leasedAt:{$lt:cutoff} }, multiple replicas running this concurrently is safe
+ * — only one will claim each stuck document.
+ */
+async function recoverStuckLeases() {
+  const cutoff = new Date(Date.now() - LEASE_TIMEOUT_MS);
+  let recovered = 0;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const doc = await WebhookRetry.findOneAndUpdate(
+      { status: 'processing', leasedAt: { $lt: cutoff } },
+      {
+        $set: {
+          status: 'pending',
+          leasedAt: null,
+          leasedBy: null,
+          // nextRetryAt stays as-is — the retry was already due
+        },
+      },
+      { new: true }
+    );
+    if (!doc) break;
+    logger.warn('Recovered stuck webhook lease', {
+      deliveryId: doc.deliveryId,
+      url: doc.url,
+      leasedBy: doc.leasedBy,
+      leasedAt: doc.leasedAt,
+    });
+    recovered++;
+  }
+
+  return recovered;
+}
+
+/**
+ * Process pending webhook retries — Issue #74 (atomic claiming).
+ *
+ * Each pending retry is claimed atomically with findOneAndUpdate before
+ * sending. Only the process that claims a document (flips status to
+ * 'processing') delivers it. Multiple replicas running concurrently will
+ * never deliver the same retry.
+ *
+ * Stuck 'processing' leases (worker crashed mid-delivery) are recovered
+ * before picking up new work.
  */
 async function processPendingRetries() {
   try {
-    const now = new Date();
-    const pending = await WebhookRetry.find({
-      status: 'pending',
-      nextRetryAt: { $lte: now },
-    }).limit(10); // Process up to 10 at a time
-
-    for (const retry of pending) {
-      await retryWebhook(retry);
+    // 1. Recover any stuck leases from crashed workers.
+    const stuckRecovered = await recoverStuckLeases();
+    if (stuckRecovered > 0) {
+      logger.info('WEBHOOK_RETRY_STUCK_RECOVERED', { count: stuckRecovered });
     }
 
-    return { processed: pending.length };
+    // 2. Atomically claim and process up to 10 pending retries.
+    const now = new Date();
+    let processed = 0;
+
+    for (let i = 0; i < 10; i++) {
+      // Atomic claim: flip one pending+due document to 'processing'.
+      // Only the winner of this findOneAndUpdate delivers the webhook.
+      const claimed = await WebhookRetry.findOneAndUpdate(
+        {
+          status: 'pending',
+          nextRetryAt: { $lte: now },
+        },
+        {
+          $set: {
+            status: 'processing',
+            leasedAt: new Date(),
+            leasedBy: WORKER_ID,
+          },
+        },
+        {
+          new: true,
+          sort: { nextRetryAt: 1 }, // process oldest-due first
+        }
+      );
+
+      if (!claimed) break; // no more pending retries
+
+      await retryWebhook(claimed);
+      processed++;
+    }
+
+    return { processed };
   } catch (err) {
     logger.error(`Error processing webhook retries`, { error: err.message });
     throw err;
@@ -256,19 +381,24 @@ async function processPendingRetries() {
 }
 
 /**
- * Retry a single failed webhook.
- * 
- * @param {object} retry - WebhookRetry document
+ * Retry a single failed webhook — atomically claimed by the caller.
+ *
+ * The signing secret is resolved from the School document at send time
+ * rather than read from the retry document (Issue #75).
+ *
+ * @param {object} retry - WebhookRetry document (must be in 'processing' state)
  */
 async function retryWebhook(retry) {
   const correlationId = retry.correlationId || retry.payload?.correlationId || null;
 
   const urlValidation = await validateWebhookUrl(retry.url);
   if (!urlValidation.valid) {
-    logger.error('Webhook retry blocked: URL failed SSRF validation', { url: retry.url, correlationId, reason: urlValidation.reason });
+    logger.error('Webhook retry blocked: URL failed SSRF validation', {
+      url: retry.url, correlationId, reason: urlValidation.reason,
+    });
     await WebhookRetry.updateOne(
       { _id: retry._id },
-      { $set: { status: 'failed', lastError: 'Invalid or disallowed webhook URL', lastAttemptAt: new Date() } }
+      { $set: { status: 'failed', lastError: 'Invalid or disallowed webhook URL', lastAttemptAt: new Date(), leasedAt: null, leasedBy: null } }
     );
     return;
   }
@@ -276,6 +406,9 @@ async function retryWebhook(retry) {
   const startTime = Date.now();
   const attemptNumber = retry.attemptCount + 1;
   const timestamp = Math.floor(Date.now() / 1000);
+
+  // Resolve signing secret from School document (Issue #75).
+  const secret = await _resolveSecret(retry.schoolId, null);
 
   const body = {
     event: retry.event,
@@ -295,8 +428,8 @@ async function retryWebhook(retry) {
     headers['X-StellarEduPay-Correlation-Id'] = correlationId;
   }
 
-  if (retry.secret) {
-    headers['X-StellarEduPay-Signature'] = `sha256=${generateSignature(body, retry.secret)}`;
+  if (secret) {
+    headers['X-StellarEduPay-Signature'] = `sha256=${generateSignature(body, secret)}`;
   }
 
   try {
@@ -308,16 +441,10 @@ async function retryWebhook(retry) {
 
     const duration = Date.now() - startTime;
     logger.info(`Webhook retry succeeded`, {
-      url: retry.url,
-      event: retry.event,
-      deliveryId: retry.deliveryId,
-      correlationId,
-      attemptNumber,
-      statusCode: response.status,
-      durationMs: duration
+      url: retry.url, event: retry.event, deliveryId: retry.deliveryId,
+      correlationId, attemptNumber, statusCode: response.status, durationMs: duration,
     });
 
-    // Mark as succeeded
     await WebhookRetry.updateOne(
       { _id: retry._id },
       {
@@ -325,6 +452,8 @@ async function retryWebhook(retry) {
           status: 'succeeded',
           succeededAt: new Date(),
           lastAttemptAt: new Date(),
+          leasedAt: null,
+          leasedBy: null,
         },
       }
     );
@@ -337,45 +466,34 @@ async function retryWebhook(retry) {
         : err.message;
 
     logger.warn(`Webhook retry failed`, {
-      url: retry.url,
-      event: retry.event,
-      deliveryId: retry.deliveryId,
-      correlationId,
-      attemptNumber,
-      error: errorMessage,
-      durationMs: duration
+      url: retry.url, event: retry.event, deliveryId: retry.deliveryId,
+      correlationId, attemptNumber, error: errorMessage, durationMs: duration,
     });
 
-    // Check if we should retry again
     if (attemptNumber < retry.maxAttempts) {
+      // Jittered backoff (Issue #73): random delay in [0, baseDelay]
       const nextRetryAt = new Date(Date.now() + getBackoffDelay(attemptNumber));
       await WebhookRetry.updateOne(
         { _id: retry._id },
         {
           $set: {
+            status: 'pending', // release the lease → back to the queue
             attemptCount: attemptNumber,
             nextRetryAt,
             lastError: errorMessage,
             lastAttemptAt: new Date(),
+            leasedAt: null,
+            leasedBy: null,
           },
           $push: {
-            errorLog: {
-              attemptNumber,
-              error: errorMessage,
-              timestamp: new Date(),
-            },
+            errorLog: { attemptNumber, error: errorMessage, timestamp: new Date() },
           },
         }
       );
     } else {
-      // Max retries exhausted
       logger.error(`Webhook retry exhausted after ${retry.maxAttempts} attempts`, {
-        url: retry.url,
-        event: retry.event,
-        deliveryId: retry.deliveryId,
-        correlationId,
-        payload: retry.payload,
-        lastError: errorMessage,
+        url: retry.url, event: retry.event, deliveryId: retry.deliveryId,
+        correlationId, payload: retry.payload, lastError: errorMessage,
       });
 
       await WebhookRetry.updateOne(
@@ -386,13 +504,11 @@ async function retryWebhook(retry) {
             attemptCount: attemptNumber,
             lastError: errorMessage,
             lastAttemptAt: new Date(),
+            leasedAt: null,
+            leasedBy: null,
           },
           $push: {
-            errorLog: {
-              attemptNumber,
-              error: errorMessage,
-              timestamp: new Date(),
-            },
+            errorLog: { attemptNumber, error: errorMessage, timestamp: new Date() },
           },
         }
       );
@@ -400,15 +516,9 @@ async function retryWebhook(retry) {
   }
 }
 
-/**
- * Notify external system of a confirmed payment.
- *
- * @param {string} webhookUrl - Registered webhook URL
- * @param {object} payment - Payment document from MongoDB
- * @param {object} student - Student document
- * @param {string|null} [secret] - Per-school HMAC secret
- */
-async function notifyPaymentConfirmed(webhookUrl, payment, student, secret = null) {
+// ── Notification helpers ─────────────────────────────────────────────────────
+
+async function notifyPaymentConfirmed(webhookUrl, payment, student, secret = null, schoolId = null) {
   return fireWebhook(webhookUrl, 'payment.confirmed', {
     transactionHash: payment.transactionHash || payment.txHash,
     correlationId: payment.correlationId,
@@ -421,13 +531,10 @@ async function notifyPaymentConfirmed(webhookUrl, payment, student, secret = nul
     referenceCode: payment.referenceCode,
     schoolId: payment.schoolId,
     senderAddress: payment.senderAddress,
-  }, secret);
+  }, secret, null, schoolId || payment.schoolId);
 }
 
-/**
- * Notify external system of a pending payment (awaiting ledger confirmation).
- */
-async function notifyPaymentPending(webhookUrl, payment, secret = null) {
+async function notifyPaymentPending(webhookUrl, payment, secret = null, schoolId = null) {
   return fireWebhook(webhookUrl, 'payment.pending', {
     transactionHash: payment.transactionHash || payment.txHash,
     correlationId: payment.correlationId,
@@ -436,13 +543,10 @@ async function notifyPaymentPending(webhookUrl, payment, secret = null) {
     assetCode: payment.assetCode || 'XLM',
     ledgerSequence: payment.ledgerSequence,
     status: 'pending_confirmation',
-  }, secret);
+  }, secret, null, schoolId || payment.schoolId);
 }
 
-/**
- * Notify external system of a failed payment.
- */
-async function notifyPaymentFailed(webhookUrl, payment, reason, secret = null) {
+async function notifyPaymentFailed(webhookUrl, payment, reason, secret = null, schoolId = null) {
   return fireWebhook(webhookUrl, 'payment.failed', {
     transactionHash: payment.transactionHash || payment.txHash,
     correlationId: payment.correlationId,
@@ -450,13 +554,10 @@ async function notifyPaymentFailed(webhookUrl, payment, reason, secret = null) {
     amount: payment.amount || 0,
     reason,
     status: 'FAILED',
-  }, secret);
+  }, secret, null, schoolId || payment.schoolId);
 }
 
-/**
- * Notify external system of a payment refund.
- */
-async function notifyPaymentRefunded(webhookUrl, refundEvent, student, secret = null) {
+async function notifyPaymentRefunded(webhookUrl, refundEvent, student, secret = null, schoolId = null) {
   return fireWebhook(webhookUrl, 'payment.refunded', {
     originalTxHash: refundEvent.originalTxHash,
     refundTxHash: refundEvent.refundTxHash || null,
@@ -465,13 +566,10 @@ async function notifyPaymentRefunded(webhookUrl, refundEvent, student, secret = 
     reason: refundEvent.reason,
     status: refundEvent.newStatus,
     refundedAt: new Date().toISOString(),
-  }, secret);
+  }, secret, null, schoolId || refundEvent.schoolId);
 }
 
-/**
- * Notify external system of a suspicious payment flagged by fraud detection.
- */
-async function notifyPaymentSuspicious(webhookUrl, payment, reason, secret = null) {
+async function notifyPaymentSuspicious(webhookUrl, payment, reason, secret = null, schoolId = null) {
   return fireWebhook(webhookUrl, 'payment.suspicious', {
     transactionHash: payment.transactionHash || payment.txHash,
     correlationId: payment.correlationId,
@@ -480,19 +578,11 @@ async function notifyPaymentSuspicious(webhookUrl, payment, reason, secret = nul
     reason,
     isSuspicious: true,
     status: payment.status,
-  }, secret);
+  }, secret, null, schoolId || payment.schoolId);
 }
 
-/**
- * Legacy fire-and-forget helper used by concurrentPaymentProcessor.
- * Passes data as-is under the payment.confirmed event.
- *
- * @param {string} url
- * @param {object} data
- * @param {string|null} [secret]
- */
-function sendPaymentWebhook(url, data, secret = null) {
-  return fireWebhook(url, 'payment.confirmed', data, secret);
+function sendPaymentWebhook(url, data, secret = null, schoolId = null) {
+  return fireWebhook(url, 'payment.confirmed', data, secret, null, schoolId);
 }
 
 module.exports = {
@@ -508,7 +598,12 @@ module.exports = {
   queueWebhookRetry,
   processPendingRetries,
   retryWebhook,
+  recoverStuckLeases,
   getBackoffDelay,
+  BACKOFF_DELAYS,
+  DEFAULT_MAX_ATTEMPTS,
+  LEASE_TIMEOUT_MS,
   // Testing internals
   _resetNonces,
+  _resolveSecret,
 };
