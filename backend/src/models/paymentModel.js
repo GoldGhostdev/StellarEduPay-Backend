@@ -8,6 +8,12 @@ const {
   CONFIRMATION_STATES,
   CONFIRMATION_STATE_TRANSITIONS,
 } = require('../services/paymentConfirmationStateMachine');
+const {
+  PAYMENT_STATUS_VALUES,
+  PAYMENT_STATUS_TRANSITIONS,
+  ADMIN_PAYMENT_STATUS_TRANSITIONS,
+  isTransitionAllowed,
+} = require('../constants/paymentStatus');
 
 const paymentSchema = new mongoose.Schema(
   {
@@ -30,7 +36,8 @@ const paymentSchema = new mongoose.Schema(
     assetCode: { type: String, default: null },
     assetType: { type: String, default: null },
 
-    status: { type: String, enum: ['PENDING', 'SUBMITTED', 'SUCCESS', 'FAILED', 'DISPUTED', 'REFUNDED', 'INVALID'], default: 'PENDING' },
+    // Canonical status values are imported from constants/paymentStatus.js (Issue #72).
+    status: { type: String, enum: PAYMENT_STATUS_VALUES, default: 'PENDING' },
     memo: { type: String },
     senderAddress: { type: String, default: null },
     isSuspicious: { type: Boolean, default: false },
@@ -141,38 +148,15 @@ paymentSchema.virtual('stellarExplorerUrl').get(function () {
 });
 
 /**
- * Allowed status transitions for normal and admin-authorized paths.
+ * Status transition guard (pre-save hook).
  *
- * Normal transitions (enforced by the pre-save hook):
- *   SUCCESS   → DISPUTED  : admin marks a confirmed payment as disputed
- *   SUCCESS   → REFUNDED  : admin marks a confirmed payment as refunded
- *   PENDING   → FAILED    : admin manually fails a stuck pending payment
- *   SUBMITTED → FAILED    : admin manually fails a stuck submitted payment
+ * Uses the canonical transition tables imported from constants/paymentStatus.js
+ * (Issue #72). See that module for the full allowed-transitions specification.
  *
- * All other transitions are rejected with INVALID_TRANSITION.
- * Callers with legitimate admin authority may set `payment.$locals.adminOverride = true`
- * before calling .save() to bypass the guard; the override is audited by the caller.
+ * Callers with admin authority may set `payment.$locals.adminOverride = true`
+ * before calling .save() to use the wider admin transition table; the override
+ * must be audited explicitly by the caller.
  */
-const PAYMENT_STATUS_TRANSITIONS = {
-  SUCCESS:   ['DISPUTED', 'REFUNDED'],
-  PENDING:   ['FAILED'],
-  SUBMITTED: ['FAILED'],
-};
-
-/**
- * Additional transitions available only when an admin sets adminOverride = true
- * on the document before calling save(). These paths are audited by the caller.
- *
- * SUCCESS  → REFUNDED  : admin refunds a confirmed payment
- * DISPUTED → REFUNDED  : admin resolves a dispute via refund
- */
-const ADMIN_PAYMENT_STATUS_TRANSITIONS = {
-  SUCCESS:   ['DISPUTED', 'REFUNDED'],
-  PENDING:   ['FAILED'],
-  SUBMITTED: ['FAILED'],
-  DISPUTED:  ['REFUNDED'],
-};
-
 paymentSchema.pre('save', function (next) {
   // Use in-memory Mongoose helpers instead of a DB query to avoid an N+1
   // round-trip on every save. this.isNew is true for inserts; for existing
@@ -187,17 +171,15 @@ paymentSchema.pre('save', function (next) {
 
     if (originalStatus !== null && originalStatus !== newStatus) {
       // Callers with admin authority may set $locals.adminOverride = true to
-      // bypass the guard for legitimate operations (e.g. SUCCESS → REFUNDED).
+      // use the wider admin transition table (e.g. DISPUTED → REFUNDED).
       // The override must be audited explicitly by the caller.
-      if (!this.$locals || !this.$locals.adminOverride) {
-        const allowed = PAYMENT_STATUS_TRANSITIONS[originalStatus] || [];
-        if (!allowed.includes(newStatus)) {
-          const err = new Error(
-            `Payment status transition from ${originalStatus} to ${newStatus} is not allowed`,
-          );
-          err.code = 'INVALID_TRANSITION';
-          return next(err);
-        }
+      const adminOverride = !!(this.$locals && this.$locals.adminOverride);
+      if (!isTransitionAllowed(originalStatus, newStatus, adminOverride)) {
+        const err = new Error(
+          `Payment status transition from ${originalStatus} to ${newStatus} is not allowed`,
+        );
+        err.code = 'INVALID_TRANSITION';
+        return next(err);
       }
     }
 
