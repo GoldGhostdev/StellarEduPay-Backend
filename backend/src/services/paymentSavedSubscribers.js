@@ -68,12 +68,34 @@ async function onPaymentSavedCancelReminder(payment) {
   }
 }
 
+// ── Refund handler ────────────────────────────────────────────────────────────
+
+async function onRefundStatusChanged(refundEvent) {
+  try {
+    if (refundEvent.newStatus === 'confirmed') {
+      const school = await School.findOne({ schoolId: refundEvent.schoolId }).lean();
+      const webhookUrl = (school && school.webhookUrl) || process.env.PAYMENT_WEBHOOK_URL;
+      if (!webhookUrl) return;
+
+      const secret = school ? school.webhookSecret : null;
+      const { notifyPaymentRefunded } = require('./webhookService');
+      await notifyPaymentRefunded(webhookUrl, refundEvent, null, secret);
+    }
+  } catch (err) {
+    logger.error('Refund webhook subscriber failed', {
+      originalTxHash: refundEvent.originalTxHash,
+      error: err.message,
+    });
+  }
+}
+
 // ── Registration ──────────────────────────────────────────────────────────────
 
 function registerPaymentSavedSubscribers() {
   paymentEvents.on('payment.saved', onPaymentSavedWebhook);
   paymentEvents.on('payment.saved', onPaymentSavedReceipt);
   paymentEvents.on('payment.saved', onPaymentSavedCancelReminder);
+  paymentEvents.on('refund.status_changed', onRefundStatusChanged);
 }
 
 module.exports = {
@@ -82,4 +104,5 @@ module.exports = {
   onPaymentSavedWebhook,
   onPaymentSavedReceipt,
   onPaymentSavedCancelReminder,
+  onRefundStatusChanged,
 };

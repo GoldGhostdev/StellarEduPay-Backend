@@ -6,11 +6,15 @@
 
 const Payment = require('../models/paymentModel');
 const Receipt = require('../models/receiptModel');
-const { createReceipt } = require('../services/receiptService');
+const Refund = require('../models/refundModel');
+const ReconciliationReport = require('../models/reconciliationReportModel');
+const { createReceipt, verifyReceiptSignature } = require('../services/receiptService');
 const { finalizeConfirmedPayments } = require('../services/stellarService');
 const { logAudit } = require('../services/auditService');
 const { syncDurationSeconds } = require('../metrics');
 const { syncPaymentsForSchool } = require('../services/stellarService');
+const { initiateRefund, getRefundsByPayment, getRefundsBySchool } = require('../services/refundService');
+const { generateReconciliationReport } = require('../services/reconciliationService');
 
 function wrapStellarError(err) {
   if (!err.code) {
@@ -333,6 +337,134 @@ function streamPaymentEvents(req, res) {
   });
 }
 
+async function initiatePaymentRefund(req, res, next) {
+  try {
+    const { schoolId } = req;
+    const { txHash } = req.params;
+    const { reason } = req.body;
+
+    if (!reason) return res.status(400).json({ error: 'reason is required', code: 'VALIDATION_ERROR' });
+
+    const payment = await Payment.findOne({ schoolId, txHash, status: 'SUCCESS' });
+    if (!payment) {
+      return res.status(404).json({ error: 'Confirmed payment not found', code: 'NOT_FOUND' });
+    }
+
+    const refund = await initiateRefund(
+      schoolId,
+      txHash,
+      payment.studentId,
+      payment.amount,
+      reason,
+      req.auditContext?.performedBy || 'unknown'
+    );
+
+    await logAudit({
+      schoolId,
+      action: 'refund_initiated',
+      performedBy: req.auditContext?.performedBy || 'unknown',
+      targetId: txHash,
+      targetType: 'refund',
+      details: { refundId: refund._id.toString(), amount: payment.amount },
+      result: 'success',
+      ipAddress: req.auditContext?.ipAddress,
+      userAgent: req.auditContext?.userAgent,
+    });
+
+    res.status(201).json(refund);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getPaymentRefunds(req, res, next) {
+  try {
+    const { schoolId } = req;
+    const { txHash } = req.params;
+
+    const refunds = await getRefundsByPayment(schoolId, txHash);
+    res.json({ refunds });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getSchoolRefunds(req, res, next) {
+  try {
+    const { schoolId } = req;
+    const { status } = req.query;
+
+    const refunds = await getRefundsBySchool(schoolId, status);
+    res.json({ refunds, count: refunds.length });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function verifyReceipt(req, res, next) {
+  try {
+    const { receiptId } = req.params;
+
+    const receipt = await Receipt.findById(receiptId).lean();
+    if (!receipt) return res.status(404).json({ error: 'Receipt not found', code: 'NOT_FOUND' });
+
+    try {
+      const isValid = verifyReceiptSignature(receipt);
+      res.json({
+        receiptId,
+        valid: isValid,
+        txHash: receipt.txHash,
+        amount: receipt.amount,
+        confirmedAt: receipt.confirmedAt,
+      });
+    } catch (err) {
+      res.json({ receiptId, valid: false, error: 'Signature verification failed' });
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getReconciliationReports(req, res, next) {
+  try {
+    const { schoolId } = req;
+    const { limit = 30 } = req.query;
+
+    const reports = await ReconciliationReport.find({ schoolId })
+      .sort({ reportedAt: -1 })
+      .limit(Math.min(parseInt(limit), 100))
+      .lean();
+
+    res.json({ reports, count: reports.length });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function generateSchoolReconciliationReport(req, res, next) {
+  try {
+    const { schoolId } = req;
+
+    const report = await generateReconciliationReport(schoolId);
+
+    await logAudit({
+      schoolId,
+      action: 'reconciliation_report_generated',
+      performedBy: req.auditContext?.performedBy || 'unknown',
+      targetId: schoolId,
+      targetType: 'reconciliation',
+      details: { reportId: report._id.toString(), drift: report.drift },
+      result: 'success',
+      ipAddress: req.auditContext?.ipAddress,
+      userAgent: req.auditContext?.userAgent,
+    });
+
+    res.status(201).json(report);
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   syncAllPayments,
   getSyncStatus,
@@ -346,5 +478,11 @@ module.exports = {
   getStuckPayments,
   updatePaymentStatus,
   streamPaymentEvents,
+  initiatePaymentRefund,
+  getPaymentRefunds,
+  getSchoolRefunds,
+  verifyReceipt,
+  getReconciliationReports,
+  generateSchoolReconciliationReport,
   _syncLocks,
 };

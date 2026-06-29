@@ -1,9 +1,11 @@
 "use strict";
 
 const Payment = require("../models/paymentModel");
+const Outbox = require("../models/outboxModel");
 const { generateReferenceCode } = require("../utils/generateReferenceCode");
 const logger = require("../utils/logger").child("TransactionService");
 const paymentEvents = require("../events/paymentEvents");
+const { v4: uuidv4 } = require("uuid");
 
 /**
  * Persist a payment record, idempotently keyed on (schoolId, txHash).
@@ -14,6 +16,10 @@ const paymentEvents = require("../events/paymentEvents");
  * When the DB rejects a duplicate (error 11000) we throw DUPLICATE_TX so callers
  * can handle it as a normal idempotency case rather than an unexpected error.
  *
+ * Side effects (webhooks, receipts, etc) are recorded in the outbox and processed
+ * asynchronously by the outbox dispatcher, ensuring atomic writes with at-least-once
+ * delivery guarantees.
+ *
  * Throws DUPLICATE_TX if the transaction was already recorded by any concurrent path.
  */
 async function savePayment(data) {
@@ -22,7 +28,22 @@ async function savePayment(data) {
   }
   try {
     const payment = await Payment.create(data);
-    paymentEvents.emit("payment.saved", payment);
+
+    const eventId = uuidv4();
+    await Outbox.create({
+      eventId,
+      eventType: "payment.saved",
+      aggregateId: payment.txHash,
+      aggregateType: "payment",
+      payload: payment.toObject(),
+    });
+
+    logger.debug("Payment saved with outbox event", {
+      txHash: payment.txHash,
+      correlationId: payment.correlationId,
+      schoolId: payment.schoolId,
+    });
+
     return payment;
   } catch (e) {
     if (e.code === 11000) {

@@ -454,6 +454,21 @@ async function notifyPaymentFailed(webhookUrl, payment, reason, secret = null) {
 }
 
 /**
+ * Notify external system of a payment refund.
+ */
+async function notifyPaymentRefunded(webhookUrl, refundEvent, student, secret = null) {
+  return fireWebhook(webhookUrl, 'payment.refunded', {
+    originalTxHash: refundEvent.originalTxHash,
+    refundTxHash: refundEvent.refundTxHash || null,
+    studentId: refundEvent.studentId,
+    amount: refundEvent.amount,
+    reason: refundEvent.reason,
+    status: refundEvent.newStatus,
+    refundedAt: new Date().toISOString(),
+  }, secret);
+}
+
+/**
  * Notify external system of a suspicious payment flagged by fraud detection.
  */
 async function notifyPaymentSuspicious(webhookUrl, payment, reason, secret = null) {
@@ -486,6 +501,7 @@ module.exports = {
   notifyPaymentConfirmed,
   notifyPaymentPending,
   notifyPaymentFailed,
+  notifyPaymentRefunded,
   notifyPaymentSuspicious,
   generateSignature,
   verifySignature,

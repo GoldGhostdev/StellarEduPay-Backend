@@ -17,6 +17,7 @@ const receiptSchema = new mongoose.Schema(
     memo:                { type: String, default: null },
     confirmedAt:         { type: Date, required: true },
     issuedAt:            { type: Date, default: Date.now },
+    signature:           { type: String, default: null },
   },
   { timestamps: true }
 );

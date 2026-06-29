@@ -43,6 +43,8 @@ const { startSessionCleanupScheduler, stopSessionCleanupScheduler } = require('.
 const { startReconciliationScheduler, stopReconciliationScheduler } = require('./services/reconciliationService');
 const { startAuditLogCleanupScheduler, stopAuditLogCleanupScheduler } = require('./services/auditLogCleanupService');
 const { startWebhookRetryScheduler, stopWebhookRetryScheduler } = require('./services/webhookRetryScheduler');
+const { startOutboxDispatcher, stopOutboxDispatcher } = require('./services/outboxDispatcher');
+const { startReconciliationReportScheduler, stopReconciliationReportScheduler } = require('./services/reconciliationReportScheduler');
 const { closeQueue } = require('./queue/transactionQueue');
 const bullMQRetryService = require('./services/bullMQRetryService');
 const { initializeRetryQueue, setupMonitoring } = require('./config/retryQueueSetup');
@@ -254,6 +256,7 @@ connectWithRetry().then(async () => {
     startReconciliationScheduler();
     startAuditLogCleanupScheduler();
     startWebhookRetryScheduler();
+    startReconciliationReportScheduler();
   };
 
   const stopLeaderSchedulers = () => {
@@ -264,6 +267,7 @@ connectWithRetry().then(async () => {
     stopReconciliationScheduler();
     stopAuditLogCleanupScheduler();
     stopWebhookRetryScheduler();
+    stopReconciliationReportScheduler();
   };
 
   leaderElection.register(startLeaderSchedulers, stopLeaderSchedulers);
@@ -274,6 +278,7 @@ connectWithRetry().then(async () => {
   retrySelector.start();
   startTxQueueWorker();
   registerPaymentSavedSubscribers();
+  startOutboxDispatcher();
 
   // Only initialise BullMQ when Redis is configured
   if (retrySelector.useBullMQ()) {
