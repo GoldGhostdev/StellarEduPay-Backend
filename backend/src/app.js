@@ -55,6 +55,7 @@ const { requireAdminAuth } = require('./middleware/auth');
 const { jsonDepthGuard, deduplicateQueryParams } = require('./middleware/sanitizeRequest');
 const { runConsistencyCheck } = require('./controllers/consistencyController');
 const { healthCheck, healthLive, healthReady } = require('./controllers/healthController');
+const { setupEnforceConsoleErrorLogging } = require('./errorHandling');
 const logger = require('./utils/logger');
 const { startHeapMonitoring } = require('./utils/heapMonitoring');
 
@@ -364,5 +365,7 @@ async function shutdown(signal) {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+setupEnforceConsoleErrorLogging();
 
 module.exports = { app, isReady };
