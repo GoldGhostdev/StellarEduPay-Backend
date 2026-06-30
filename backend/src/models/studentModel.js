@@ -44,6 +44,14 @@ const studentSchema = new mongoose.Schema(
     lastEmailDeliveryStatus: { type: String, enum: ['queued', 'sent', 'failed', 'delivered', 'opened', 'bounced', 'complaint', 'skipped'], default: null },
     lastEmailDeliveryAt: { type: Date, default: null },
 
+    /**
+     * Academic period to which the current reminderCount applies.
+     * Reset reminderCount when a new fee period begins (e.g. "2025-2026").
+     * Prevents a perpetually-unpaid fee from generating endless reminders
+     * across multiple academic years.
+     */
+    reminderPeriod: { type: String, default: null },
+
     // Audit fields
     dateOfBirth: { type: Date },
     gender: { type: String },

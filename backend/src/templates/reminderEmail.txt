@@ -5,7 +5,8 @@
   {{i18n_school}}    : {{schoolName}}
   {{i18n_feeAmount}} : {{feeAmount}}
   {{i18n_amountDue}} : {{outstanding}}
-{{#if supportContact}}  Support        : {{supportContact}}
+{{#if deadline}}  Payment Due    : {{deadline}}
+{{/if}}{{#if supportContact}}  Support        : {{supportContact}}
 {{/if}}
 {{i18n_payPrompt}}
 

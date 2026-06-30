@@ -12,7 +12,8 @@
  *   backend/src/templates/reminderEmail.html (HTML)
  *
  * Supported placeholders: {{studentName}}, {{studentId}}, {{className}},
- * {{schoolName}}, {{feeAmount}}, {{outstanding}}, {{reminderNote}}
+ * {{schoolName}}, {{feeAmount}}, {{outstanding}}, {{reminderNote}},
+ * {{urgency}}, {{deadline}}
  * The {{#if reminderNote}}…{{/if}} block is stripped when reminderNote is empty.
  */
 
@@ -87,14 +88,26 @@ async function verifySmtp() {
 /**
  * Build the reminder email body from external template files.
  */
-function buildReminderEmail({ studentName, studentId, className, feeAmount, remainingBalance, schoolName, reminderCount, unsubscribeUrl }) {
+function buildReminderEmail({ studentName, studentId, className, feeAmount, remainingBalance, schoolName, reminderCount, unsubscribeUrl, escalationLevel, paymentDeadline }) {
   const outstanding = remainingBalance != null ? remainingBalance : feeAmount;
-  const subject = `[${schoolName}] Fee Payment Reminder — ${studentName}`;
+
+  // Determine escalation prefix and urgency message
+  const ESCALATION_LABELS = {
+    1: { prefix: '', urgency: 'This is a friendly reminder that school fees are due.' },
+    2: { prefix: 'URGENT: ', urgency: 'This is an urgent reminder — fees are due very soon.' },
+    3: { prefix: 'OVERDUE: ', urgency: 'Fees are now overdue. Please arrange payment immediately to avoid any disruption.' },
+  };
+  const esc = ESCALATION_LABELS[escalationLevel] || ESCALATION_LABELS[1];
+  const subject = `${esc.prefix}[${schoolName}] Fee Payment Reminder — ${studentName}`;
   const reminderNote = reminderCount > 1
     ? `Note: This is reminder #${reminderCount}. If you have already paid, please disregard this message.`
     : '';
 
-  const vars = { studentName, studentId, className, feeAmount, outstanding, schoolName, reminderNote, unsubscribeUrl: unsubscribeUrl || '' };
+  const deadlineStr = paymentDeadline
+    ? new Date(paymentDeadline).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    : null;
+
+  const vars = { studentName, studentId, className, feeAmount, outstanding, schoolName, reminderNote, urgency: esc.urgency, deadline: deadlineStr || '', unsubscribeUrl: unsubscribeUrl || '' };
 
   const text = renderTemplate(loadTemplate('reminderEmail.txt'), vars);
   const html = renderTemplate(loadTemplate('reminderEmail.html'), vars);
@@ -115,6 +128,8 @@ function buildReminderEmail({ studentName, studentId, className, feeAmount, rema
  * @param {number|null} opts.remainingBalance
  * @param {string} opts.schoolName
  * @param {number} opts.reminderCount
+ * @param {number} [opts.escalationLevel=1] - 1=early, 2=approaching, 3=overdue
+ * @param {Date|null} [opts.paymentDeadline] - Payment deadline date
  * @returns {Promise<{sent: boolean, messageId?: string, preview?: string}>}
  */
 async function sendFeeReminder(opts) {

@@ -6,6 +6,7 @@
   <tr><td style="padding:4px 12px 4px 0;color:#555;">{{i18n_school}}</td><td><strong>{{schoolName}}</strong></td></tr>
   <tr><td style="padding:4px 12px 4px 0;color:#555;">{{i18n_feeAmount}}</td><td>{{feeAmount}}</td></tr>
   <tr><td style="padding:4px 12px 4px 0;color:#555;">{{i18n_amountDue}}</td><td><strong>{{outstanding}}</strong></td></tr>
+  {{#if deadline}}<tr><td style="padding:4px 12px 4px 0;color:#555;">Payment Due</td><td><strong>{{deadline}}</strong></td></tr>{{/if}}
   {{#if supportContact}}<tr><td style="padding:4px 12px 4px 0;color:#555;">Support</td><td>{{supportContact}}</td></tr>{{/if}}
 </table>
 <p>{{i18n_payPrompt}}</p>
