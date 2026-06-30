@@ -191,39 +191,11 @@ app.use(notFoundHandler);
 app.use(globalErrorHandler);
 
 // ── Database + service startup ────────────────────────────────────────────────
-async function connectWithRetry(maxAttempts = 5, baseDelayMs = 1000) {
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await mongoose.connect(config.MONGO_URI);
-      logger.info('MongoDB connected');
-      return;
-    } catch (err) {
-      const delay = baseDelayMs * Math.pow(2, attempt - 1); // exponential backoff
-      logger.error(`MongoDB connection attempt ${attempt}/${maxAttempts} failed`, {
-        error: err.message,
-        retryInMs: attempt < maxAttempts ? delay : null,
-      });
-      if (attempt === maxAttempts) {
-        logger.error('Exhausted all MongoDB connection attempts — exiting');
-        process.exit(1);
-      }
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-}
+const { connect: connectDatabase } = require('./config/database');
+// Connection options are configured in config/database.js with explicit pool sizing,
+// timeouts, and majority write concern for financial data durability.
 
-// Log disconnections after successful startup
-mongoose.connection.on('disconnected', () =>
-  logger.warn('MongoDB disconnected — waiting for reconnect')
-);
-mongoose.connection.on('reconnected', () =>
-  logger.info('MongoDB reconnected')
-);
-mongoose.connection.on('error', (err) =>
-  logger.error('MongoDB connection error', { error: err.message })
-);
-
-connectWithRetry().then(async () => {
+connectDatabase().then(async () => {
   // Start heap monitoring to detect memory leaks early
   startHeapMonitoring();
 

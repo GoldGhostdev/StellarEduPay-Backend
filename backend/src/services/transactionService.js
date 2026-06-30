@@ -8,6 +8,13 @@ const paymentEvents = require("../events/paymentEvents");
 const { v4: uuidv4 } = require("uuid");
 
 /**
+ * Write concern for financial writes ensuring durability across replica set failover.
+ * Uses 'majority' write concern to guarantee writes are acknowledged by a majority
+ * of replica set members, preventing data loss on primary failure.
+ */
+const FINANCIAL_WRITE_CONCERN = { w: 'majority', wtimeout: 5000 };
+
+/**
  * Persist a payment record, idempotently keyed on (schoolId, txHash).
  *
  * Idempotency is guaranteed by the unique compound DB index {schoolId, txHash}.
@@ -29,7 +36,7 @@ async function savePayment(data, options = {}) {
     data = { ...data, referenceCode: await generateReferenceCode() };
   }
   try {
-    const payment = await Payment.create(data, { session });
+    const payment = await Payment.create(data, { session, writeConcern: FINANCIAL_WRITE_CONCERN });
 
     const eventId = uuidv4();
     await Outbox.create({
@@ -38,7 +45,7 @@ async function savePayment(data, options = {}) {
       aggregateId: payment.txHash,
       aggregateType: "payment",
       payload: payment.toObject(),
-    }, { session });
+    }, { session, writeConcern: FINANCIAL_WRITE_CONCERN });
 
     logger.debug("Payment saved with outbox event", {
       txHash: payment.txHash,
