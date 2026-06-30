@@ -73,6 +73,91 @@ new client.Gauge({
   },
 });
 
+// sse_connected_clients / sse_active_schools — current SSE fan-out registry
+// size on this replica, read live from the SSE service on each scrape.
+new client.Gauge({
+  name: 'sse_connected_clients',
+  help: 'Number of currently connected SSE clients on this replica',
+  registers: [registry],
+  collect() {
+    try {
+      const { connections } = require('../services/sseService').getStats();
+      this.set(connections);
+    } catch (_) {
+      // SSE service not loaded — scrape still succeeds
+    }
+  },
+});
+
+new client.Gauge({
+  name: 'sse_active_schools',
+  help: 'Number of schools with at least one connected SSE client on this replica',
+  registers: [registry],
+  collect() {
+    try {
+      const { schools } = require('../services/sseService').getStats();
+      this.set(schools);
+    } catch (_) {
+      // SSE service not loaded — scrape still succeeds
+    }
+  },
+});
+
+// pending_verification_backlog{status} — depth of the Stellar verification
+// retry backlog, queried live from MongoDB on each scrape. Operators alert on a
+// growing `pending`/`processing` backlog or any `dead_letter` accumulation.
+new client.Gauge({
+  name: 'pending_verification_backlog',
+  help: 'Number of pending verification records grouped by status (pending, processing, resolved, dead_letter)',
+  labelNames: ['status'],
+  registers: [registry],
+  async collect() {
+    try {
+      const { getBacklogCounts } = require('../services/retryService');
+      const counts = await getBacklogCounts();
+      this.reset();
+      for (const [status, count] of Object.entries(counts)) {
+        this.set({ status }, count);
+      }
+    } catch (_) {
+      // DB may not be ready yet — scrape still succeeds
+    }
+  },
+});
+
+// suspicious_payment_flagged{school_id} — counter of payments flagged as
+// suspicious by the abnormal-pattern detector, so operators can alert on
+// flagged volume per tenant. Incremented in the payment confirmation pipeline.
+const suspiciousPaymentFlagged = new client.Counter({
+  name: 'suspicious_payment_flagged',
+  help: 'Number of payments flagged as suspicious, labelled by school',
+  labelNames: ['school_id'],
+  registers: [registry],
+});
+
+// Concurrent payment batch metrics — recorded by the concurrentPaymentProcessor
+// after each processBatch() call so batch throughput and per-item outcomes are
+// observable and alertable.
+const paymentBatchTotal = new client.Counter({
+  name: 'payment_batch_total',
+  help: 'Number of payment batches processed',
+  registers: [registry],
+});
+
+const paymentBatchItemsTotal = new client.Counter({
+  name: 'payment_batch_items_total',
+  help: 'Number of payment batch items grouped by outcome',
+  labelNames: ['outcome'],
+  registers: [registry],
+});
+
+const paymentBatchDurationSeconds = new client.Histogram({
+  name: 'payment_batch_duration_seconds',
+  help: 'Duration of a payment batch in seconds',
+  buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120],
+  registers: [registry],
+});
+
 // http_request_duration_seconds{method,route,status} — recorded per request
 // in the requestLogger middleware, which already captures these fields.
 const httpRequestDurationSeconds = new client.Histogram({
@@ -83,4 +168,12 @@ const httpRequestDurationSeconds = new client.Histogram({
   registers: [registry],
 });
 
-module.exports = { registry, syncDurationSeconds, httpRequestDurationSeconds };
+module.exports = {
+  registry,
+  syncDurationSeconds,
+  httpRequestDurationSeconds,
+  suspiciousPaymentFlagged,
+  paymentBatchTotal,
+  paymentBatchItemsTotal,
+  paymentBatchDurationSeconds,
+};

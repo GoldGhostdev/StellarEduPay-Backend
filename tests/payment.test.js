@@ -2,7 +2,7 @@
 
 // Must set required env vars before app is loaded (config/index.js validates on require)
 process.env.MONGO_URI = 'mongodb://localhost:27017/test';
-process.env.SCHOOL_WALLET_ADDRESS = 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B';
+process.env.SCHOOL_WALLET_ADDRESS = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 process.env.JWT_SECRET = 'test-jwt-secret-for-payment-controller-suite';
 
 const request = require('supertest');
@@ -88,6 +88,7 @@ jest.mock('../backend/src/models/paymentModel', () => {
     create: jest.fn().mockResolvedValue({}),
     aggregate: jest.fn().mockResolvedValue([]),
     countDocuments: jest.fn((filter) => Promise.resolve(mockPayments.filter((p) => matchesFilter(p, filter)).length)),
+    activeFilter: jest.fn((filter = {}) => ({ ...filter, deletedAt: null })),
   };
 });
 
@@ -152,7 +153,7 @@ jest.mock('../backend/src/models/schoolModel', () => {
       schoolId: 'SCH001',
       name: 'Test School',
       slug: 'test-school',
-      stellarAddress: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+      stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
       localCurrency: 'USD',
       isActive: true,
     },
@@ -160,7 +161,7 @@ jest.mock('../backend/src/models/schoolModel', () => {
       schoolId: 'SCH_A',
       name: 'School A',
       slug: 'school-a',
-      stellarAddress: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+      stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
       localCurrency: 'USD',
       isActive: true,
     },
@@ -168,7 +169,7 @@ jest.mock('../backend/src/models/schoolModel', () => {
       schoolId: 'SCH_B',
       name: 'School B',
       slug: 'school-b',
-      stellarAddress: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+      stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
       localCurrency: 'USD',
       isActive: true,
     },
@@ -222,7 +223,7 @@ jest.mock('../backend/src/services/currencyConversionService', () => ({
 }));
 
 jest.mock('../backend/src/config/stellarConfig', () => ({
-  SCHOOL_WALLET: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+  SCHOOL_WALLET: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
   ACCEPTED_ASSETS: {
     XLM:  { code: 'XLM',  type: 'native',          issuer: null },
     USDC: { code: 'USDC', type: 'credit_alphanum4', issuer: 'GISSUER' },
@@ -530,6 +531,22 @@ describe('Payment API', () => {
     const second = await testApi.get('/api/payments/accepted-assets').set('If-None-Match', etag);
     expect(second.status).toBe(304);
   });
+
+  test('GET /api/payments/ — excludes soft-deleted payments', async () => {
+    const Payment = require('../backend/src/models/paymentModel');
+    Payment.find.mockClear();
+    Payment.countDocuments.mockClear();
+
+    const res = await testApi.get('/api/payments/');
+    expect(res.status).toBe(200);
+
+    // Assert the query filter includes deletedAt: null
+    const findCallArgs = Payment.find.mock.calls[0][0];
+    expect(findCallArgs).toHaveProperty('deletedAt', null);
+
+    const countCallArgs = Payment.countDocuments.mock.calls[0][0];
+    expect(countCallArgs).toHaveProperty('deletedAt', null);
+  });
 });
 
 // ─── Fee Structure API ────────────────────────────────────────────────────────
@@ -653,6 +670,8 @@ describe('Duplicate Student Detection', () => {
 
   test('POST /api/students — 201 without warning for unique student', async () => {
     const Student = require('../backend/src/models/studentModel');
+    const FeeStructure = require('../backend/src/models/feeStructureModel');
+    FeeStructure.findOne.mockResolvedValueOnce({ className: '7A', feeAmount: 300 });
     Student.findOne.mockResolvedValueOnce(null); // no exact match
     Student.findOne.mockResolvedValueOnce(null); // no soft-deleted match
     Student.findOne.mockResolvedValueOnce(null); // no fuzzy match

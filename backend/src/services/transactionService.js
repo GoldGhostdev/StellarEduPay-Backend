@@ -1,49 +1,66 @@
 "use strict";
 
 const Payment = require("../models/paymentModel");
+const Outbox = require("../models/outboxModel");
 const { generateReferenceCode } = require("../utils/generateReferenceCode");
 const logger = require("../utils/logger").child("TransactionService");
 const paymentEvents = require("../events/paymentEvents");
+const { v4: uuidv4 } = require("uuid");
 
 /**
- * Persist a payment record, enforcing uniqueness on txHash.
- * Throws DUPLICATE_TX if already recorded.
- * data must include schoolId.
+ * Persist a payment record, idempotently keyed on (schoolId, txHash).
+ *
+ * Idempotency is guaranteed by the unique compound DB index {schoolId, txHash}.
+ * We rely on that constraint directly instead of a findOne pre-check, which has a
+ * TOCTOU race window between concurrent poller/verify paths processing the same tx.
+ * When the DB rejects a duplicate (error 11000) we throw DUPLICATE_TX so callers
+ * can handle it as a normal idempotency case rather than an unexpected error.
+ *
+ * Side effects (webhooks, receipts, etc) are recorded in the outbox and processed
+ * asynchronously by the outbox dispatcher, ensuring atomic writes with at-least-once
+ * delivery guarantees.
+ *
+ * Throws DUPLICATE_TX if the transaction was already recorded by any concurrent path.
  */
 async function savePayment(data) {
-  const exists = await Payment.findOne({
-    transactionHash: data.transactionHash,
-    deletedAt: null,
-  });
-  if (exists) {
-    const err = new Error(
-      `Transaction ${data.transactionHash} has already been processed`,
-    );
-    err.code = "DUPLICATE_TX";
-    throw err;
-  }
   if (!data.referenceCode) {
     data = { ...data, referenceCode: await generateReferenceCode() };
   }
   try {
     const payment = await Payment.create(data);
-    paymentEvents.emit("payment.saved", payment);
+
+    const eventId = uuidv4();
+    await Outbox.create({
+      eventId,
+      eventType: "payment.saved",
+      aggregateId: payment.txHash,
+      aggregateType: "payment",
+      payload: payment.toObject(),
+    });
+
+    logger.debug("Payment saved with outbox event", {
+      txHash: payment.txHash,
+      correlationId: payment.correlationId,
+      schoolId: payment.schoolId,
+    });
+
     return payment;
   } catch (e) {
     if (e.code === 11000) {
-      const err = new Error(
-        `Transaction ${data.transactionHash} has already been processed`,
-      );
+      const txHash = data.txHash || data.transactionHash;
+      const err = new Error(`Transaction ${txHash} has already been processed`);
       err.code = "DUPLICATE_TX";
-      logger.warn("Duplicate transaction rejected", {
-        txHash: data.transactionHash,
+      logger.warn("Duplicate transaction rejected (concurrent path)", {
+        txHash,
+        correlationId: data.correlationId,
         schoolId: data.schoolId,
       });
       throw err;
     }
     logger.error("Failed to record payment", {
       error: e.message,
-      txHash: data.transactionHash,
+      txHash: data.txHash || data.transactionHash,
+      correlationId: data.correlationId,
       schoolId: data.schoolId,
     });
     throw e;

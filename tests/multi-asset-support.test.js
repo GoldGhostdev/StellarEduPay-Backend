@@ -1,7 +1,7 @@
 'use strict';
 
 process.env.MONGO_URI = 'mongodb://localhost:27017/test';
-process.env.SCHOOL_WALLET_ADDRESS = 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B';
+process.env.SCHOOL_WALLET_ADDRESS = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 process.env.JWT_SECRET = 'test-jwt-secret-multi-asset';
 
 const request = require('supertest');
@@ -21,14 +21,16 @@ jest.mock('../backend/src/middleware/auth', () => ({
 jest.mock('../backend/src/models/schoolModel', () => {
   const mockSchool = {
     _id: 'sch-001',
+    schoolId: 'sch-001',
     slug: 'test-school',
     name: 'Test School',
-    stellarAddress: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+    stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
     acceptedAssets: ['XLM', 'USDC'],
+    isActive: true,
     save: jest.fn().mockResolvedValue(true),
   };
   return {
-    findOne: jest.fn().mockResolvedValue(mockSchool),
+    findOne: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue(mockSchool) }),
     findOneAndUpdate: jest.fn().mockResolvedValue(mockSchool),
     create: jest.fn().mockResolvedValue(mockSchool),
   };
@@ -57,14 +59,26 @@ jest.mock('../backend/src/models/studentModel', () => ({
 
 jest.mock('../backend/src/services/currencyConversionService', () => ({
   convertAmount: jest.fn((amount, fromAsset, toAsset) => {
-    if (fromAsset === 'USDC' && toAsset === 'USD') {
-      return amount; // 1:1 conversion for USDC
-    }
-    if (fromAsset === 'XLM' && toAsset === 'USD') {
-      return amount * 0.1; // Mock XLM to USD rate
-    }
+    if (fromAsset === 'USDC' && toAsset === 'USD') return amount;
+    if (fromAsset === 'XLM' && toAsset === 'USD') return amount * 0.1;
     return amount;
   }),
+  convertToLocalCurrency: jest.fn().mockResolvedValue({ available: false }),
+  enrichPaymentWithConversion: jest.fn().mockImplementation((p) => Promise.resolve(p)),
+}));
+
+jest.mock('../backend/src/config/stellarConfig', () => ({
+  server: { transactions: jest.fn(), ledgers: jest.fn() },
+  SCHOOL_WALLET: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  isAcceptedAsset: jest.fn((code, type) => ({
+    accepted: ['XLM', 'USDC'].includes(code) || type === 'native',
+  })),
+  ACCEPTED_ASSETS: {
+    XLM: { code: 'XLM', type: 'native' },
+    USDC: { code: 'USDC', type: 'credit_alphanum4' },
+  },
+  CONFIRMATION_THRESHOLD: 3,
+  FINALIZATION_THRESHOLD: 10,
 }));
 
 const app = require('../backend/src/app');
@@ -81,7 +95,7 @@ describe('Multi-Asset Support (#675)', () => {
           records: [
             {
               type: 'payment',
-              to: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+              to: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
               asset_type: 'native',
               amount: '250',
             },
@@ -92,7 +106,7 @@ describe('Multi-Asset Support (#675)', () => {
       const stellarService = require('../backend/src/services/stellarService');
       const result = await stellarService.extractValidPayment(
         mockTx,
-        'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B'
+        'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
       );
 
       expect(result).toBeDefined();
@@ -109,7 +123,7 @@ describe('Multi-Asset Support (#675)', () => {
           records: [
             {
               type: 'payment',
-              to: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+              to: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
               asset_type: 'credit_alphanum4',
               asset_code: 'USDC',
               asset_issuer: 'GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTQSXUSMIQ75XABZEYYWRB46Z7',
@@ -122,7 +136,7 @@ describe('Multi-Asset Support (#675)', () => {
       const stellarService = require('../backend/src/services/stellarService');
       const result = await stellarService.extractValidPayment(
         mockTx,
-        'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B'
+        'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
       );
 
       expect(result).toBeDefined();
@@ -139,7 +153,7 @@ describe('Multi-Asset Support (#675)', () => {
           records: [
             {
               type: 'payment',
-              to: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+              to: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
               asset_type: 'credit_alphanum12',
               asset_code: 'UNSUPPORTED',
               asset_issuer: 'GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTQSXUSMIQ75XABZEYYWRB46Z7',
@@ -152,7 +166,7 @@ describe('Multi-Asset Support (#675)', () => {
       const stellarService = require('../backend/src/services/stellarService');
       const result = await stellarService.extractValidPayment(
         mockTx,
-        'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B'
+        'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
       );
 
       expect(result).toBeNull();
@@ -236,7 +250,7 @@ describe('Multi-Asset Support (#675)', () => {
         .send({
           name: 'New School',
           slug: 'new-school',
-          stellarAddress: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+          stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
           acceptedAssets: ['XLM', 'USDC'],
         })
         .expect(201);
@@ -252,7 +266,7 @@ describe('Multi-Asset Support (#675)', () => {
         .send({
           name: 'New School',
           slug: 'new-school',
-          stellarAddress: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+          stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
           acceptedAssets: ['XLM', 'UNSUPPORTED'],
         })
         .expect(400);
@@ -267,7 +281,7 @@ describe('Multi-Asset Support (#675)', () => {
         .send({
           name: 'New School',
           slug: 'new-school',
-          stellarAddress: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+          stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
         })
         .expect(201);
 

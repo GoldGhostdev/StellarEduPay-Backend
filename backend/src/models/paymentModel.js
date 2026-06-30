@@ -3,6 +3,11 @@
 const mongoose = require('mongoose');
 const softDelete = require('../utils/softDelete');
 const memoEncryption = require('../utils/memoEncryption');
+const tenantScope = require('../plugins/tenantScope');
+const {
+  CONFIRMATION_STATES,
+  CONFIRMATION_STATE_TRANSITIONS,
+} = require('../services/paymentConfirmationStateMachine');
 
 const paymentSchema = new mongoose.Schema(
   {
@@ -12,6 +17,11 @@ const paymentSchema = new mongoose.Schema(
     // unique: false here — uniqueness is enforced by the compound index { schoolId, txHash } below
     txHash: { type: String, required: true, index: true },
     amount: { type: Number, required: true },
+
+    // Correlation ID tying this payment to its full async lifecycle (polling
+    // -> queue -> processor -> webhook -> SSE). Deterministically derived
+    // from txHash — see utils/correlationId.js.
+    correlationId: { type: String, default: null, index: true },
     feeAmount: { type: Number, default: null },
     feeCategory: { type: String, default: null, index: true },
     feeValidationStatus: { type: String, enum: ['valid', 'underpaid', 'overpaid', 'partial', 'unknown'], default: 'unknown' },
@@ -20,15 +30,39 @@ const paymentSchema = new mongoose.Schema(
     assetCode: { type: String, default: null },
     assetType: { type: String, default: null },
 
-    status: { type: String, enum: ['PENDING', 'SUBMITTED', 'SUCCESS', 'FAILED', 'DISPUTED', 'INVALID'], default: 'PENDING' },
+    status: { type: String, enum: ['PENDING', 'SUBMITTED', 'SUCCESS', 'FAILED', 'DISPUTED', 'REFUNDED', 'INVALID'], default: 'PENDING' },
     memo: { type: String },
     senderAddress: { type: String, default: null },
     isSuspicious: { type: Boolean, default: false },
     suspicionReason: { type: String, default: null },
+    // Review workflow for flagged payments (issue #852). A flag starts as
+    // 'flagged'; an admin clears it (false positive → 'cleared', restoring the
+    // payment) or confirms it as fraud ('confirmed_fraud'). All transitions are
+    // captured in the audit log.
+    suspicionReviewStatus: {
+      type: String,
+      enum: ['flagged', 'cleared', 'confirmed_fraud'],
+      default: 'flagged',
+    },
+    suspicionReviewedBy: { type: String, default: null },
+    suspicionReviewedAt: { type: Date, default: null },
+    suspicionReviewNote: { type: String, default: null },
 
     ledger: { type: Number, default: null },
     ledgerSequence: { type: Number, default: null },
+    // Legacy 3-value status, kept for backward compatibility with existing
+    // queries/UI. Always derived from confirmationState (see
+    // paymentConfirmationStateMachine.deriveLegacyConfirmationStatus).
     confirmationStatus: { type: String, enum: ['pending_confirmation', 'confirmed', 'failed'], default: 'pending_confirmation' },
+    // Fine-grained finality state machine (issue #747):
+    // detected -> pending -> confirmed -> finalized, with failed as a
+    // terminal escape from any non-terminal state. See
+    // backend/src/services/paymentConfirmationStateMachine.js for the policy.
+    confirmationState: {
+      type: String,
+      enum: Object.values(CONFIRMATION_STATES),
+      default: CONFIRMATION_STATES.DETECTED,
+    },
 
     // Audit trail
     transactionHash: { type: String, default: null, index: true },
@@ -49,6 +83,18 @@ const paymentSchema = new mongoose.Schema(
 
     // Soft Delete
     deletedAt: { type: Date, default: null, index: true },
+
+    // #883 — Fiat snapshot: rate locked at confirmation time.
+    // Storing this prevents historical report totals from drifting as exchange
+    // rates move. Reports use this field; a separate "current-rate" mode can
+    // convert on-the-fly by ignoring fiatSnapshot.
+    fiatSnapshot: {
+      fiatAmount:   { type: Number, default: null },  // crypto_amount × fiatRate
+      fiatCurrency: { type: String, default: null },  // e.g. 'USD'
+      fiatRate:     { type: Number, default: null },  // rate at confirmation
+      rateSource:   { type: String, default: null },  // 'coingecko' | 'coinbase' | etc.
+      rateTimestamp:{ type: Date,   default: null },  // when the rate was fetched
+    },
   },
   {
     timestamps: true,
@@ -58,6 +104,7 @@ const paymentSchema = new mongoose.Schema(
 );
 
 softDelete(paymentSchema);
+paymentSchema.plugin(tenantScope, { modelName: 'Payment' });
 
 // Indexes
 // Compound unique index enforces per-school txHash uniqueness (same tx can exist in two schools).
@@ -72,6 +119,7 @@ paymentSchema.index({ schoolId: 1, studentId: 1, confirmedAt: -1 });
 paymentSchema.index({ schoolId: 1, feeValidationStatus: 1 });
 paymentSchema.index({ schoolId: 1, isSuspicious: 1 });
 paymentSchema.index({ schoolId: 1, confirmationStatus: 1 });
+paymentSchema.index({ confirmationState: 1 });
 // Partial compound index for report queries: filters out orphaned/deleted
 // payments so MongoDB only indexes documents that appear in aggregation
 // results, keeping the index lean and report queries fast.
@@ -93,19 +141,36 @@ paymentSchema.virtual('stellarExplorerUrl').get(function () {
 });
 
 /**
- * Allowed manual status transitions, mirroring the controller's ALLOWED_TRANSITIONS.
- * This table is the single source of truth for model-level transition validation.
+ * Allowed status transitions for normal and admin-authorized paths.
  *
- * SUCCESS   → DISPUTED  : admin marks a confirmed payment as disputed
- * PENDING   → FAILED    : admin manually fails a stuck pending payment
- * SUBMITTED → FAILED    : admin manually fails a stuck submitted payment
+ * Normal transitions (enforced by the pre-save hook):
+ *   SUCCESS   → DISPUTED  : admin marks a confirmed payment as disputed
+ *   SUCCESS   → REFUNDED  : admin marks a confirmed payment as refunded
+ *   PENDING   → FAILED    : admin manually fails a stuck pending payment
+ *   SUBMITTED → FAILED    : admin manually fails a stuck submitted payment
  *
- * All other transitions (e.g. FAILED → SUCCESS) are explicitly disallowed.
+ * All other transitions are rejected with INVALID_TRANSITION.
+ * Callers with legitimate admin authority may set `payment.$locals.adminOverride = true`
+ * before calling .save() to bypass the guard; the override is audited by the caller.
  */
 const PAYMENT_STATUS_TRANSITIONS = {
-  SUCCESS:   ['DISPUTED'],
+  SUCCESS:   ['DISPUTED', 'REFUNDED'],
   PENDING:   ['FAILED'],
   SUBMITTED: ['FAILED'],
+};
+
+/**
+ * Additional transitions available only when an admin sets adminOverride = true
+ * on the document before calling save(). These paths are audited by the caller.
+ *
+ * SUCCESS  → REFUNDED  : admin refunds a confirmed payment
+ * DISPUTED → REFUNDED  : admin resolves a dispute via refund
+ */
+const ADMIN_PAYMENT_STATUS_TRANSITIONS = {
+  SUCCESS:   ['DISPUTED', 'REFUNDED'],
+  PENDING:   ['FAILED'],
+  SUBMITTED: ['FAILED'],
+  DISPUTED:  ['REFUNDED'],
 };
 
 paymentSchema.pre('save', function (next) {
@@ -121,13 +186,39 @@ paymentSchema.pre('save', function (next) {
     const newStatus = this.status;
 
     if (originalStatus !== null && originalStatus !== newStatus) {
-      // Status is being changed — validate against the allowed transition table.
-      const allowed = PAYMENT_STATUS_TRANSITIONS[originalStatus] || [];
-      if (!allowed.includes(newStatus)) {
+      // Callers with admin authority may set $locals.adminOverride = true to
+      // bypass the guard for legitimate operations (e.g. SUCCESS → REFUNDED).
+      // The override must be audited explicitly by the caller.
+      if (!this.$locals || !this.$locals.adminOverride) {
+        const allowed = PAYMENT_STATUS_TRANSITIONS[originalStatus] || [];
+        if (!allowed.includes(newStatus)) {
+          const err = new Error(
+            `Payment status transition from ${originalStatus} to ${newStatus} is not allowed`,
+          );
+          err.code = 'INVALID_TRANSITION';
+          return next(err);
+        }
+      }
+    }
+
+    // Same backstop for the finality state machine (issue #747). Callers are
+    // expected to compute the next value via
+    // paymentConfirmationStateMachine.resolveNextState() before assigning it
+    // here; this guard catches any caller that bypasses that and tries to
+    // persist an illegal jump (e.g. finalized -> pending).
+    const originalConfirmationState = savedState ? savedState.confirmationState : null;
+    const newConfirmationState = this.confirmationState;
+
+    if (
+      originalConfirmationState != null &&
+      originalConfirmationState !== newConfirmationState
+    ) {
+      const allowedStates = CONFIRMATION_STATE_TRANSITIONS[originalConfirmationState] || [];
+      if (!allowedStates.includes(newConfirmationState)) {
         const err = new Error(
-          `Payment status transition from ${originalStatus} to ${newStatus} is not allowed`,
+          `Payment confirmationState transition from ${originalConfirmationState} to ${newConfirmationState} is not allowed`,
         );
-        err.code = 'INVALID_TRANSITION';
+        err.code = 'INVALID_CONFIRMATION_TRANSITION';
         return next(err);
       }
     }

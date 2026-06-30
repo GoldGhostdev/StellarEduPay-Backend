@@ -15,6 +15,13 @@ jest.mock('../backend/src/cache', () => ({
   TTL: { REPORT: 60 },
 }));
 
+// Mock School model so the controller doesn't need a real DB
+jest.mock('../backend/src/models/schoolModel', () => ({
+  findOne: jest.fn().mockReturnValue({
+    lean: jest.fn().mockResolvedValue({ schoolId: 'school-1', timezone: 'UTC', isActive: true }),
+  }),
+}));
+
 // Mock reportService so valid requests don't need a real DB
 jest.mock('../backend/src/services/reportService', () => ({
   generateReport: jest.fn().mockResolvedValue({ summary: {}, byDate: [] }),

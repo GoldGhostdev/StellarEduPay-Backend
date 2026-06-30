@@ -1,118 +1,51 @@
 'use strict';
 
+/**
+ * ROUNDING POLICY (Issue #751)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Monetary comparisons use Decimal to avoid IEEE-754 drift.
+ *   XLM  — 7 decimal places (Stellar on-chain precision)
+ *   USDC — 7 decimal places
+ *   Fiat — 2 decimal places
+ *
+ * Rule: never use raw JS Number arithmetic on monetary values. Use Decimal for
+ * all comparisons and arithmetic; convert to Number only at output boundaries.
+ */
+
+const Decimal = require('decimal.js');
 const { MIN_PAYMENT_AMOUNT, MAX_PAYMENT_AMOUNT } = require('../config');
 
-/**
- * Validate that a payment amount is within configured limits.
- * 
- * @param {number} amount - The payment amount to validate
- * @returns {Object} - { valid: boolean, error?: string, code?: string }
- */
+const D_MIN = new Decimal(MIN_PAYMENT_AMOUNT);
+const D_MAX = new Decimal(MAX_PAYMENT_AMOUNT);
+
 function validatePaymentAmount(amount) {
-  // Ensure amount is a valid number
-  if (typeof amount !== 'number' || isNaN(amount)) {
-    return {
-      valid: false,
-      error: 'Payment amount must be a valid number',
-      code: 'INVALID_AMOUNT',
-    };
-  }
-
-  // Check if amount is positive
-  if (amount <= 0) {
-    return {
-      valid: false,
-      error: 'Payment amount must be greater than zero',
-      code: 'INVALID_AMOUNT',
-    };
-  }
-
-  // Check minimum limit
-  if (amount < MIN_PAYMENT_AMOUNT) {
-    return {
-      valid: false,
-      error: `Payment amount ${amount} is below the minimum allowed amount of ${MIN_PAYMENT_AMOUNT}`,
-      code: 'AMOUNT_TOO_LOW',
-    };
-  }
-
-  // Check maximum limit
-  if (amount > MAX_PAYMENT_AMOUNT) {
-    return {
-      valid: false,
-      error: `Payment amount ${amount} exceeds the maximum allowed amount of ${MAX_PAYMENT_AMOUNT}`,
-      code: 'AMOUNT_TOO_HIGH',
-    };
-  }
-
+  const d = new Decimal(typeof amount === 'number' && isFinite(amount) ? amount : NaN);
+  if (!d.isFinite() || d.lte(0))
+    return { valid: false, error: 'Payment amount must be a valid positive number', code: 'INVALID_AMOUNT' };
+  if (d.lt(D_MIN))
+    return { valid: false, error: `Payment amount ${amount} is below the minimum of ${MIN_PAYMENT_AMOUNT}`, code: 'AMOUNT_TOO_LOW' };
+  if (d.gt(D_MAX))
+    return { valid: false, error: `Payment amount ${amount} exceeds the maximum of ${MAX_PAYMENT_AMOUNT}`, code: 'AMOUNT_TOO_HIGH' };
   return { valid: true };
 }
 
-/**
- * Validate payment amount against school-specific maximum multiplier.
- * The maximum allowed payment is feeAmount * school.maxPaymentMultiplier.
- * 
- * @param {number} paymentAmount - The payment amount to validate
- * @param {number} feeAmount - The expected fee amount
- * @param {number} maxPaymentMultiplier - School's max payment multiplier (default: 3.0)
- * @returns {Object} - { valid: boolean, error?: string, code?: string }
- */
 function validatePaymentAmountAgainstFee(paymentAmount, feeAmount, maxPaymentMultiplier = 3.0) {
-  // Ensure amounts are valid numbers
-  if (typeof paymentAmount !== 'number' || isNaN(paymentAmount)) {
-    return {
-      valid: false,
-      error: 'Payment amount must be a valid number',
-      code: 'INVALID_AMOUNT',
-    };
-  }
+  const dPayment = new Decimal(typeof paymentAmount === 'number' && isFinite(paymentAmount) ? paymentAmount : NaN);
+  const dFee    = new Decimal(typeof feeAmount    === 'number' && isFinite(feeAmount)    ? feeAmount    : NaN);
 
-  if (typeof feeAmount !== 'number' || isNaN(feeAmount) || feeAmount <= 0) {
-    return {
-      valid: false,
-      error: 'Fee amount must be a valid positive number',
-      code: 'INVALID_FEE',
-    };
-  }
+  if (!dPayment.isFinite() || dPayment.lte(0))
+    return { valid: false, error: 'Payment amount must be a valid positive number', code: 'INVALID_AMOUNT' };
+  if (!dFee.isFinite() || dFee.lte(0))
+    return { valid: false, error: 'Fee amount must be a valid positive number', code: 'INVALID_FEE' };
 
-  // Check if amount is positive
-  if (paymentAmount <= 0) {
-    return {
-      valid: false,
-      error: 'Payment amount must be greater than zero',
-      code: 'INVALID_AMOUNT',
-    };
-  }
-
-  // Calculate maximum allowed payment
-  const maxAllowed = feeAmount * maxPaymentMultiplier;
-
-  // Check if payment exceeds school's maximum multiplier
-  if (paymentAmount > maxAllowed) {
-    return {
-      valid: false,
-      error: `Payment amount ${paymentAmount} exceeds the maximum allowed amount of ${maxAllowed} (${maxPaymentMultiplier}× the fee of ${feeAmount})`,
-      code: 'AMOUNT_TOO_HIGH',
-    };
-  }
-
+  const maxAllowed = dFee.mul(new Decimal(maxPaymentMultiplier));
+  if (dPayment.gt(maxAllowed))
+    return { valid: false, error: `Payment amount ${paymentAmount} exceeds the maximum of ${maxAllowed.toNumber()} (${maxPaymentMultiplier}× the fee)`, code: 'AMOUNT_TOO_HIGH' };
   return { valid: true };
 }
 
-/**
- * Get the current payment limits configuration.
- * 
- * @returns {Object} - { min: number, max: number }
- */
 function getPaymentLimits() {
-  return {
-    min: MIN_PAYMENT_AMOUNT,
-    max: MAX_PAYMENT_AMOUNT,
-  };
+  return { min: MIN_PAYMENT_AMOUNT, max: MAX_PAYMENT_AMOUNT };
 }
 
-module.exports = {
-  validatePaymentAmount,
-  validatePaymentAmountAgainstFee,
-  getPaymentLimits,
-};
+module.exports = { validatePaymentAmount, validatePaymentAmountAgainstFee, getPaymentLimits };

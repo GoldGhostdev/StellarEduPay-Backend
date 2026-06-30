@@ -45,6 +45,10 @@ jest.mock('ioredis', () => jest.fn().mockImplementation(() => ({
   del: jest.fn().mockResolvedValue(1),
 })), { virtual: true });
 
+jest.mock('../backend/src/services/auditService', () => ({
+  logAudit: jest.fn().mockResolvedValue(undefined),
+}));
+
 const { handleLogin, handleRefresh, handleLogout, _resetStore } = require('../backend/src/controllers/authController');
 
 function mockRes() {
@@ -166,16 +170,16 @@ describe('#595 JWT refresh token flow', () => {
   // ── Expired access token ───────────────────────────────────────────────────
 
   describe('expired access token', () => {
-    it('auth middleware returns 401 TOKEN_EXPIRED for expired tokens', () => {
+    it('auth middleware returns 401 TOKEN_EXPIRED for expired tokens', async () => {
       const jwt = require('jsonwebtoken');
       const { requireAdminAuth } = require('../backend/src/middleware/auth');
 
       // sign with negative expiresIn so stub marks it expired
       const expiredToken = jwt.sign({ role: 'admin' }, process.env.JWT_SECRET, { expiresIn: -1 });
 
-      const req = { headers: { authorization: `Bearer ${expiredToken}` } };
+      const req = { headers: { authorization: `Bearer ${expiredToken}` }, ip: '127.0.0.1' };
       const res = mockRes();
-      requireAdminAuth(req, res, jest.fn());
+      await requireAdminAuth(req, res, jest.fn());
 
       expect(res.status).toHaveBeenCalledWith(401);
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'TOKEN_EXPIRED' }));

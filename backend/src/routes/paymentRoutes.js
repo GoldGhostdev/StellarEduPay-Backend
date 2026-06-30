@@ -9,30 +9,43 @@ const {
   verifyPayment,
   submitTransaction,
   verifyTransactionHash,
-  syncAllPayments,
-  getSyncStatus,
-  finalizePayments,
-  getStudentPayments,
+} = require('../controllers/paymentController');
+
+const {
   getAcceptedAssets,
   getPaymentLimitsEndpoint,
+  getStudentPayments,
+  getAllPayments,
   getOverpayments,
   getStudentBalance,
   getSuspiciousPayments,
   getPendingPayments,
   getRetryQueue,
   getExchangeRates,
-  getAllPayments,
-  getDeadLetterJobs,
-  retryDeadLetterJob,
+  getPaymentSummary,
+} = require('../controllers/paymentQueryController');
+
+const {
+  syncAllPayments,
+  getSyncStatus,
+  finalizePayments,
+  generateReceipt,
   lockPaymentForUpdate,
   unlockPayment,
-  generateReceipt,
+  getDeadLetterJobs,
+  retryDeadLetterJob,
   getQueueJobStatus,
-  streamPaymentEvents,
-  getPaymentSummary,
-  updatePaymentStatus,
   getStuckPayments,
-} = require("../controllers/paymentController");
+  updatePaymentStatus,
+  reviewSuspiciousPayment,
+  streamPaymentEvents,
+  initiatePaymentRefund,
+  getPaymentRefunds,
+  getSchoolRefunds,
+  verifyReceipt,
+  getReconciliationReports,
+  generateSchoolReconciliationReport,
+} = require('../controllers/paymentAdminController');
 
 const {
   validateStudentIdParam,
@@ -187,5 +200,15 @@ router.post("/:paymentId/lock", lockPaymentForUpdate);
 router.post("/:paymentId/unlock", unlockPayment);
 
 router.patch("/:txHash/status", requireAdminAuth, auditContext, updatePaymentStatus);
+router.patch("/:txHash/suspicion-review", requireAdminAuth, auditContext, reviewSuspiciousPayment);
+
+router.post("/:txHash/refund", requireAdminAuth, auditContext, initiatePaymentRefund);
+router.get("/:txHash/refunds", getPaymentRefunds);
+router.get("/refunds/school/list", requireAdminAuth, getSchoolRefunds);
+
+router.get("/verify/:receiptId", verifyReceipt);
+
+router.get("/reconciliation/reports", requireAdminAuth, getReconciliationReports);
+router.post("/reconciliation/report", requireAdminAuth, auditContext, generateSchoolReconciliationReport);
 
 module.exports = router;

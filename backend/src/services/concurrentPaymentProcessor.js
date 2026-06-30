@@ -7,38 +7,87 @@ const Student = require("../models/studentModel");
 const Payment = require("../models/paymentModel");
 const PaymentIntent = require("../models/paymentIntentModel");
 const { sendPaymentWebhook } = require("./webhookService");
+const { deriveIdempotencyKey } = require("../utils/idempotencyKey");
+const idempotencyStore = require("./idempotencyStore");
+
+// Scope under which the processor namespaces its idempotency keys. Distinct
+// from any HTTP middleware scope (request path) so the two layers never collide
+// in the shared persistent store — while still deriving keys through the same
+// canonical function, so they cannot disagree about what a given client key
+// means.
+const PROCESSOR_SCOPE = "payment-processor";
+
+// Reconstruct a PaymentProcessingResult from a persisted JSON body so replayed
+// results behave like freshly produced ones (`.success`, `.toJSON()`).
+function rehydrateResult(body) {
+  if (!body) return null;
+  const result = new PaymentProcessingResult(
+    Boolean(body.success),
+    body.data || {},
+    body.error || null
+  );
+  if (body.timestamp) result.timestamp = body.timestamp;
+  return result;
+}
 
 // ── Idempotency Cache ─────────────────────────────────────────────────────────
+// Demoted to a pure read-through cache of the persistent `idempotencyStore`.
+// The persistent store (Mongo, optionally fronted by Redis) is the single
+// source of truth and survives restarts / spans replicas; this in-process Map
+// is only an L1 to skip a store round-trip within the TTL window.
 class IdempotencyCache {
-  constructor(ttlMs = 60000) {
-    this.cache = new Map();
+  constructor(ttlMs = 60000, store = idempotencyStore) {
+    this.l1 = new Map();
     this.ttlMs = ttlMs;
+    this.store = store;
+    this.scope = PROCESSOR_SCOPE;
   }
 
-  has(key) {
-    const entry = this.cache.get(key);
-    if (!entry) return false;
+  _l1Get(canonicalKey) {
+    const entry = this.l1.get(canonicalKey);
+    if (!entry) return null;
     if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
-      return false;
+      this.l1.delete(canonicalKey);
+      return null;
     }
-    return true;
+    return entry.result;
   }
 
-  get(key) {
-    if (!this.has(key)) return null;
-    return this.cache.get(key).result;
+  // Returns a cached PaymentProcessingResult or null. The persistent store is
+  // authoritative; the L1 is consulted first only as an optimization.
+  async get(rawKey) {
+    const canonicalKey = deriveIdempotencyKey(rawKey, this.scope);
+    if (!canonicalKey) return null;
+
+    const local = this._l1Get(canonicalKey);
+    if (local) return local;
+
+    const record = await this.store.get(canonicalKey);
+    if (!record) return null;
+
+    const result = rehydrateResult(record.responseBody);
+    this.l1.set(canonicalKey, { result, expiresAt: Date.now() + this.ttlMs });
+    return result;
   }
 
-  set(key, result) {
-    this.cache.set(key, { result, expiresAt: Date.now() + this.ttlMs });
-    if (this.cache.size % 100 === 0) this.cleanup();
+  async set(rawKey, result) {
+    const canonicalKey = deriveIdempotencyKey(rawKey, this.scope);
+    if (!canonicalKey) return;
+
+    this.l1.set(canonicalKey, { result, expiresAt: Date.now() + this.ttlMs });
+    if (this.l1.size % 100 === 0) this.cleanup();
+
+    await this.store.set(canonicalKey, {
+      scope: this.scope,
+      responseStatus: 200,
+      responseBody: result.toJSON ? result.toJSON() : result,
+    });
   }
 
   cleanup() {
     const now = Date.now();
-    for (const [key, entry] of this.cache.entries()) {
-      if (now > entry.expiresAt) this.cache.delete(key);
+    for (const [key, entry] of this.l1.entries()) {
+      if (now > entry.expiresAt) this.l1.delete(key);
     }
   }
 }
@@ -125,6 +174,29 @@ class ConcurrentPaymentProcessor {
     this.maxRetries = options.maxRetries || 3;
     this.maxQueueDepth = options.maxQueueDepth || 1000;
     this.activeCount = 0;
+
+    // ── Batch / backpressure tuning (issue #851) ──────────────────────────────
+    // Default concurrency for processBatch when the caller doesn't override it.
+    this.batchConcurrencyLimit = options.batchConcurrencyLimit || 10;
+    // When Horizon (via the rate-limited client) signals saturation, hold new
+    // dispatches rather than piling on and tripping the rate limiter. Bounded so
+    // a wedged signal can't stall a batch forever. Off by default so unit tests
+    // that construct a bare processor don't pull in the Horizon client; the
+    // production singleton below opts in.
+    this.backpressureEnabled = options.backpressureEnabled === true;
+    this.backpressureDelayMs = options.backpressureDelayMs || 100;
+    this.maxBackpressureWaitMs = options.maxBackpressureWaitMs || 5000;
+    // Injectable for tests; defaults to the shared rate-limited client's readiness.
+    this.isHorizonReady =
+      options.isHorizonReady ||
+      (() => {
+        try {
+          return require("./stellarRateLimitedClient").getClient().isReady();
+        } catch (_) {
+          // Client not initialized (e.g. Redis-less test env) — assume ready.
+          return true;
+        }
+      });
   }
 
   // ── Process Payment ───────────────────────────────────────────────────────
@@ -146,12 +218,16 @@ class ConcurrentPaymentProcessor {
       );
     }
 
-    // Idempotency check
-    if (idempotencyKey && this.idempotencyCache.has(idempotencyKey)) {
-      logger.info("[PaymentProcessor] Returning cached result", {
-        idempotencyKey,
-      });
-      return this.idempotencyCache.get(idempotencyKey);
+    // Idempotency check — persistent store is the source of truth, so a replay
+    // is recognized even after a restart or on another replica.
+    if (idempotencyKey) {
+      const cached = await this.idempotencyCache.get(idempotencyKey);
+      if (cached) {
+        logger.info("[PaymentProcessor] Returning persisted idempotent result", {
+          idempotencyKey,
+        });
+        return cached;
+      }
     }
 
     // Rate limit check
@@ -178,7 +254,7 @@ class ConcurrentPaymentProcessor {
           duplicate: true,
           existingPaymentId: existingPayment._id,
         });
-        if (idempotencyKey) this.idempotencyCache.set(idempotencyKey, result);
+        if (idempotencyKey) await this.idempotencyCache.set(idempotencyKey, result);
         return result;
       }
 
@@ -213,7 +289,7 @@ class ConcurrentPaymentProcessor {
 
       // Cache success
       if (idempotencyKey && processingResult.success)
-        this.idempotencyCache.set(idempotencyKey, processingResult);
+        await this.idempotencyCache.set(idempotencyKey, processingResult);
 
       // Trigger webhook (non-blocking)
       this.triggerWebhook(
@@ -288,6 +364,13 @@ class ConcurrentPaymentProcessor {
 
         const currentTotal = student.totalPaid || 0;
         const newTotal = currentTotal + amount;
+        
+        // Reconciliation Invariant Check
+        const allocationAmount = newTotal - currentTotal;
+        if (allocationAmount !== amount) {
+          throw new Error(`Reconciliation invariant failed: allocation (${allocationAmount}) != payment amount (${amount})`);
+        }
+        
         const newRemainingBalance = Math.max(0, student.feeAmount - newTotal);
         const isFeePaid = newTotal >= student.feeAmount;
 
@@ -375,6 +458,13 @@ class ConcurrentPaymentProcessor {
 
           const currentTotal = student.totalPaid || 0;
           const newTotal = currentTotal + amount;
+          
+          // Reconciliation Invariant Check
+          const allocationAmount = newTotal - currentTotal;
+          if (allocationAmount !== amount) {
+            throw new Error(`Reconciliation invariant failed: allocation (${allocationAmount}) != payment amount (${amount})`);
+          }
+          
           const newRemainingBalance = Math.max(0, student.feeAmount - newTotal);
           const isFeePaid = newTotal >= student.feeAmount;
 
@@ -434,6 +524,13 @@ class ConcurrentPaymentProcessor {
 
       const currentTotal = student.totalPaid || 0;
       const newTotal = currentTotal + amount;
+      
+      // Reconciliation Invariant Check
+      const allocationAmount = newTotal - currentTotal;
+      if (allocationAmount !== amount) {
+        throw new Error(`Reconciliation invariant failed: allocation (${allocationAmount}) != payment amount (${amount})`);
+      }
+      
       const newRemainingBalance = Math.max(0, student.feeAmount - newTotal);
       const isFeePaid = newTotal >= student.feeAmount;
 
@@ -500,41 +597,139 @@ class ConcurrentPaymentProcessor {
     );
   }
 
-  // ── Batch Processing ─────────────────────────────────────────────────────
-  async processBatch(payments, options = {}) {
-    const results = [];
-    const concurrencyLimit = options.concurrencyLimit || 10;
-    const queueFullRetryDelayMs = options.queueFullRetryDelayMs || 500;
-
-    for (let i = 0; i < payments.length; i += concurrencyLimit) {
-      const batch = payments.slice(i, i + concurrencyLimit);
-      const batchResults = await Promise.allSettled(
-        batch.map(async (p) => {
-          let result = await this.processPayment(p, options);
-          while (result && result.error && result.error.code === "QUEUE_FULL") {
-            logger.warn("[PaymentProcessor] Queue full, retrying after delay", {
-              retryDelayMs: queueFullRetryDelayMs,
-            });
-            await new Promise((resolve) =>
-              setTimeout(resolve, queueFullRetryDelayMs)
-            );
-            result = await this.processPayment(p, options);
-          }
-          return result;
-        })
-      );
-
-      for (const res of batchResults) {
-        if (res.status === "fulfilled")
-          results.push({ success: true, data: res.value });
-        else results.push({ success: false, error: res.reason.message });
+  // ── Backpressure ─────────────────────────────────────────────────────────
+  // Hold until the Horizon-facing client reports it is not saturated, or the
+  // bounded wait elapses (so a stuck signal can never deadlock a batch).
+  async _awaitHorizonCapacity(maxWaitMs) {
+    if (!this.backpressureEnabled) return;
+    let waited = 0;
+    while (waited < maxWaitMs) {
+      let ready = true;
+      try {
+        ready = this.isHorizonReady();
+      } catch (_) {
+        ready = true;
       }
+      if (ready) return;
+      logger.warn("[PaymentProcessor] Horizon saturated — applying backpressure", {
+        waitedMs: waited,
+      });
+      await new Promise((r) => setTimeout(r, this.backpressureDelayMs));
+      waited += this.backpressureDelayMs;
+    }
+  }
+
+  // ── Batch Processing ─────────────────────────────────────────────────────
+  // Streaming worker pool: a fixed number of workers each pull the next item as
+  // soon as they finish, so one slow payment never stalls a whole chunk.
+  // Per-item failures are isolated into structured results — a single bad tx
+  // never aborts the batch — and backpressure is applied against Horizon
+  // saturation between dispatches. Outcomes are exported as metrics.
+  async processBatch(payments, options = {}) {
+    const items = Array.isArray(payments) ? payments : [];
+    const concurrencyLimit = Math.max(
+      1,
+      options.concurrencyLimit || this.batchConcurrencyLimit
+    );
+    const queueFullRetryDelayMs =
+      options.queueFullRetryDelayMs !== undefined
+        ? options.queueFullRetryDelayMs
+        : 500;
+    const maxBackpressureWaitMs =
+      options.maxBackpressureWaitMs !== undefined
+        ? options.maxBackpressureWaitMs
+        : this.maxBackpressureWaitMs;
+
+    const startedAt = Date.now();
+    const results = new Array(items.length);
+
+    const processOne = async (payment, index) => {
+      // Backpressure: yield to Horizon if it is saturated before dispatching.
+      await this._awaitHorizonCapacity(maxBackpressureWaitMs);
+
+      let result = await this.processPayment(payment, options);
+      // QUEUE_FULL is local saturation — retry the same item after a delay
+      // rather than counting it as a failure.
+      while (result && result.error && result.error.code === "QUEUE_FULL") {
+        logger.warn("[PaymentProcessor] Queue full, retrying after delay", {
+          index,
+          retryDelayMs: queueFullRetryDelayMs,
+        });
+        await new Promise((resolve) =>
+          setTimeout(resolve, queueFullRetryDelayMs)
+        );
+        await this._awaitHorizonCapacity(maxBackpressureWaitMs);
+        result = await this.processPayment(payment, options);
+      }
+      return result;
+    };
+
+    // Fixed pool of workers pulling from a shared cursor. A thrown error in one
+    // item is caught and recorded — it never rejects the pool or aborts peers.
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        try {
+          const value = await processOne(items[index], index);
+          // `success` reflects whether the call completed without throwing
+          // (Promise-level). `itemSuccess` is the business outcome — callers
+          // inspect it (or `data.success`) for per-item detail.
+          results[index] = {
+            success: true,
+            index,
+            itemSuccess: !!(value && value.success),
+            error:
+              value && !value.success && value.error
+                ? value.error.message
+                : null,
+            code: value && !value.success && value.error ? value.error.code : null,
+            data: value,
+          };
+        } catch (err) {
+          results[index] = {
+            success: false,
+            index,
+            itemSuccess: false,
+            error: err.message,
+          };
+        }
+      }
+    };
+
+    const poolSize = Math.min(concurrencyLimit, items.length);
+    await Promise.all(Array.from({ length: poolSize }, () => worker()));
+
+    // Promise-level counts (backward compatible): fulfilled vs thrown.
+    const successful = results.filter((r) => r && r.success).length;
+    const failed = results.length - successful;
+    // Business-level counts: payments that actually processed vs not.
+    const itemsSucceeded = results.filter((r) => r && r.itemSuccess).length;
+    const itemsFailed = results.length - itemsSucceeded;
+
+    // ── Batch metrics ──────────────────────────────────────────────────────
+    try {
+      const {
+        paymentBatchTotal,
+        paymentBatchItemsTotal,
+        paymentBatchDurationSeconds,
+      } = require("../metrics");
+      paymentBatchTotal.inc();
+      if (itemsSucceeded) paymentBatchItemsTotal.inc({ outcome: "success" }, itemsSucceeded);
+      if (itemsFailed) paymentBatchItemsTotal.inc({ outcome: "failed" }, itemsFailed);
+      paymentBatchDurationSeconds.observe((Date.now() - startedAt) / 1000);
+    } catch (_) {
+      // Metrics module not available — batch result is unaffected.
     }
 
     return {
-      total: payments.length,
-      successful: results.filter((r) => r.success).length,
-      failed: results.filter((r) => !r.success).length,
+      total: items.length,
+      successful,
+      failed,
+      itemsSucceeded,
+      itemsFailed,
+      durationMs: Date.now() - startedAt,
       results,
     };
   }
@@ -542,7 +737,7 @@ class ConcurrentPaymentProcessor {
   // ── Stats ───────────────────────────────────────────────────────────────
   getStats() {
     return {
-      idempotencyCacheSize: this.idempotencyCache.cache.size,
+      idempotencyCacheSize: this.idempotencyCache.l1.size,
       rateLimiterStats: { trackedKeys: this.rateLimiter.requests.size },
       transactionManagerStats: {
         activeTransactions: transactionManager.getActiveTransactionCount(),
@@ -559,10 +754,12 @@ const config = require("../config");
 const concurrentPaymentProcessor = new ConcurrentPaymentProcessor({
   idempotencyTtlMs: 60000,
   maxRequestsPerSecond: 100,
-  lockStrategy: CONCURRENCY_STRATEGY.OPTIMISTIC,
+  lockStrategy: CONCURRENCY_STRATEGY.PESSIMISTIC,
   lockTimeoutMs: 30000,
   maxRetries: 3,
   maxQueueDepth: config.MAX_QUEUE_DEPTH,
+  // The live processor applies Horizon backpressure during batch processing.
+  backpressureEnabled: true,
 });
 
 module.exports = {

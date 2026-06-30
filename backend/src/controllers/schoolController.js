@@ -6,6 +6,7 @@ const School = require('../models/schoolModel');
 const { logAudit } = require('../services/auditService');
 const { verifyStellarAccountFunding } = require('../services/stellarAccountVerificationService');
 const { validateWebhookUrl } = require('../utils/validateWebhookUrl');
+const schoolCache = require('../services/schoolCacheInvalidator');
 
 function isValidTimezone(tz) {
   try {
@@ -19,7 +20,7 @@ function isValidTimezone(tz) {
 // POST /api/schools
 async function createSchool(req, res, next) {
   try {
-    const { name, slug, stellarAddress, network, adminEmail, address, timezone, suspiciousPaymentMultiplier } = req.body;
+    const { name, slug, stellarAddress, network, adminEmail, address, timezone, suspiciousPaymentMultiplier, suspiciousAmountConfig } = req.body;
 
     const errors = [];
     if (!name || typeof name !== 'string' || !name.trim())
@@ -60,6 +61,7 @@ async function createSchool(req, res, next) {
       address: address || null,
       ...(timezone !== undefined && { timezone }),
       ...(suspiciousPaymentMultiplier !== undefined && { suspiciousPaymentMultiplier }),
+      ...(suspiciousAmountConfig !== undefined && { suspiciousAmountConfig }),
     });
 
     // Audit log
@@ -155,7 +157,7 @@ async function getSchool(req, res, next) {
 // PATCH /api/schools/:schoolSlug
 async function updateSchool(req, res, next) {
   try {
-    const allowed = ['name', 'stellarAddress', 'network', 'adminEmail', 'address', 'suspiciousPaymentMultiplier'];
+    const allowed = ['name', 'stellarAddress', 'network', 'adminEmail', 'address', 'suspiciousPaymentMultiplier', 'suspiciousAmountConfig'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
@@ -204,6 +206,17 @@ async function updateSchool(req, res, next) {
       }
     }
 
+    // Validate suspiciousAmountConfig if being updated
+    if (updates.suspiciousAmountConfig !== undefined) {
+      const cfg = updates.suspiciousAmountConfig;
+      if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) {
+        return res.status(400).json({ error: 'suspiciousAmountConfig must be an object', code: 'INVALID_SUSPICIOUS_AMOUNT_CONFIG' });
+      }
+      if (cfg.mode !== undefined && !['fee_multiplier', 'historical'].includes(cfg.mode)) {
+        return res.status(400).json({ error: "suspiciousAmountConfig.mode must be 'fee_multiplier' or 'historical'", code: 'INVALID_SUSPICIOUS_AMOUNT_CONFIG' });
+      }
+    }
+
     const original = await School.findOne({ slug: req.params.schoolSlug.toLowerCase(), isActive: true }).lean();
     if (!original) {
       const e = new Error('School not found');
@@ -223,6 +236,10 @@ async function updateSchool(req, res, next) {
       updates,
       { new: true, runValidators: true }
     );
+
+    // Drop the stale lean copy on every replica so the rotated address /
+    // changed config is served within seconds, not after the 5-minute TTL.
+    schoolCache.invalidate(school);
 
     // Audit log — mark stellarAddress changes as high-severity
     if (req.auditContext) {
@@ -273,6 +290,9 @@ async function deactivateSchool(req, res, next) {
       return next(e);
     }
 
+    // Drop the cached copy everywhere so deactivation blocks requests at once.
+    schoolCache.invalidate(school);
+
     // Audit log
     if (req.auditContext) {
       await logAudit({
@@ -322,6 +342,7 @@ async function deactivateSchoolEndpoint(req, res, next) {
       });
     }
 
+    schoolCache.invalidate(school);
     res.json({ message: `School "${school.name}" deactivated`, schoolId: school.schoolId, isActive: false });
   } catch (err) {
     next(err);
@@ -356,6 +377,7 @@ async function activateSchool(req, res, next) {
       });
     }
 
+    schoolCache.invalidate(school);
     res.json({ message: `School "${school.name}" activated`, schoolId: school.schoolId, isActive: true });
   } catch (err) {
     next(err);
@@ -402,10 +424,95 @@ async function registerWebhook(req, res, next) {
       });
     }
 
+    schoolCache.invalidate(school);
     res.json({ webhookUrl: school.webhookUrl });
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { createSchool, getAllSchools, getSchool, updateSchool, deactivateSchool, deactivateSchoolEndpoint, activateSchool, registerWebhook };
+// GET /api/schools/:schoolSlug/settings
+async function getSchoolSettings(req, res, next) {
+  try {
+    const { getSchoolSettings } = require('../services/schoolSettingsService');
+    const school = await School.findOne({ slug: req.params.schoolSlug.toLowerCase(), isActive: true }, { schoolId: 1 }).lean();
+    if (!school) return next(Object.assign(new Error('School not found'), { code: 'NOT_FOUND' }));
+    const settings = await getSchoolSettings(school.schoolId);
+    res.json({ settings });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// PATCH /api/schools/:schoolSlug/settings
+async function updateSchoolSettings(req, res, next) {
+  try {
+    const { setSchoolSetting, SETTING_KEYS } = require('../services/schoolSettingsService');
+    const school = await School.findOne({ slug: req.params.schoolSlug.toLowerCase(), isActive: true }, { schoolId: 1 }).lean();
+    if (!school) return next(Object.assign(new Error('School not found'), { code: 'NOT_FOUND' }));
+
+    const updated = {};
+    for (const [key, value] of Object.entries(req.body)) {
+      if (SETTING_KEYS.has(key)) {
+        await setSchoolSetting(school.schoolId, key, value);
+        updated[key] = value;
+      }
+    }
+
+    if (req.auditContext) {
+      const { logAudit } = require('../services/auditService');
+      await logAudit({
+        schoolId: school.schoolId,
+        action: 'school_settings_update',
+        performedBy: req.auditContext.performedBy,
+        targetId: school.schoolId,
+        targetType: 'school',
+        details: { updated },
+        result: 'success',
+        ipAddress: req.auditContext.ipAddress,
+        userAgent: req.auditContext.userAgent,
+      });
+    }
+
+    res.json({ updated });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// DELETE /api/schools/:schoolSlug/settings/:key
+async function clearSchoolSetting(req, res, next) {
+  try {
+    const { clearSchoolSetting, SETTING_KEYS } = require('../services/schoolSettingsService');
+    const school = await School.findOne({ slug: req.params.schoolSlug.toLowerCase(), isActive: true }, { schoolId: 1 }).lean();
+    if (!school) return next(Object.assign(new Error('School not found'), { code: 'NOT_FOUND' }));
+
+    const { key } = req.params;
+    if (!SETTING_KEYS.has(key)) {
+      return res.status(400).json({ error: `Unknown setting key: ${key}`, code: 'INVALID_SETTING_KEY' });
+    }
+
+    await clearSchoolSetting(school.schoolId, key);
+
+    if (req.auditContext) {
+      const { logAudit } = require('../services/auditService');
+      await logAudit({
+        schoolId: school.schoolId,
+        action: 'school_settings_clear',
+        performedBy: req.auditContext.performedBy,
+        targetId: school.schoolId,
+        targetType: 'school',
+        details: { key },
+        result: 'success',
+        ipAddress: req.auditContext.ipAddress,
+        userAgent: req.auditContext.userAgent,
+      });
+    }
+
+    res.json({ message: `Setting "${key}" cleared for school`, schoolSlug: req.params.schoolSlug });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { createSchool, getAllSchools, getSchool, updateSchool, deactivateSchool, deactivateSchoolEndpoint, activateSchool, registerWebhook, getSchoolSettings, updateSchoolSettings, clearSchoolSetting };

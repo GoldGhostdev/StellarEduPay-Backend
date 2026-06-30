@@ -1,5 +1,25 @@
 'use strict';
 
+/**
+ * ROUNDING POLICY (Issue #751)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * All monetary arithmetic in this engine uses decimal.js (Decimal) to avoid
+ * IEEE-754 floating-point drift.
+ *
+ * Scale and rounding mode per asset:
+ *   XLM  — 7 decimal places, ROUND_HALF_UP (Stellar native precision)
+ *   USDC — 7 decimal places, ROUND_HALF_UP (stablecoin, same on-chain scale)
+ *   Fiat — 2 decimal places, ROUND_HALF_UP (standard currency display)
+ *
+ * Rule: NO raw JS Number arithmetic (+, -, *, /) on monetary values anywhere
+ * in the fee/payment path. Always construct `new Decimal(value)` and chain
+ * Decimal operations; convert back to Number only at the final output boundary
+ * via `.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber()`.
+ */
+
+const Decimal = require('decimal.js');
+Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
+
 const logger = require('../utils/logger');
 
 /**
@@ -72,65 +92,91 @@ class DynamicFeeAdjustmentEngine {
   }
 
   /**
-   * Add a new custom rule dynamically
+   * Add a new custom rule dynamically.
+   * Validates required fields and rejects percentage discounts > 100.
    * @param {Object} rule
    */
   addRule(rule) {
+    if (!rule || typeof rule !== 'object') throw new Error('rule must be an object');
+    if (!rule.id || typeof rule.id !== 'string') throw new Error('rule.id is required');
+    if (!rule.name || typeof rule.name !== 'string') throw new Error('rule.name is required');
+    if (!['discount', 'penalty'].includes(rule.type)) throw new Error('rule.type must be "discount" or "penalty"');
+    if (typeof rule.value !== 'number' || rule.value < 0) throw new Error('rule.value must be a non-negative number');
+    if (typeof rule.condition !== 'function') throw new Error('rule.condition must be a function');
+    const isFixed = rule.isFixed === true ||
+      (typeof rule.description === 'string' && rule.description.toLowerCase().startsWith('fixed'));
+    if (!isFixed && rule.type === 'discount' && rule.value > 100) {
+      throw new Error('discount percentage rule.value cannot exceed 100');
+    }
     this.rules.push(rule);
     this.rules.sort((a, b) => b.priority - a.priority);
   }
 
   /**
-   * Calculate final fee after applying all matching rules
+   * Calculate final fee after applying all matching rules.
+   * All arithmetic uses Decimal to prevent floating-point drift (Issue #751).
+   *
    * @param {Object} context - Fee calculation context
    * @returns {Object} Fee calculation result
    */
   calculateFee(context) {
-    let currentFee = Number(context.baseAmount || 0);
+    // Use Decimal throughout — no raw Number arithmetic on monetary values.
+    let currentFee = new Decimal(context.baseAmount || 0);
     const adjustments = [];
 
     for (const rule of this.rules) {
       if (rule.condition(context)) {
-        let adjustmentAmount = 0;
+        const isFixed = rule.isFixed === true ||
+          (typeof rule.description === 'string' && rule.description.toLowerCase().startsWith('fixed'));
+        const ruleValue = new Decimal(rule.value);
+        let adjustmentAmount;
 
         if (rule.type === 'discount') {
-          adjustmentAmount = -(currentFee * (rule.value / 100));
+          adjustmentAmount = isFixed
+            ? ruleValue.negated()
+            : currentFee.mul(ruleValue).div(100).negated();
         } else if (rule.type === 'penalty') {
-          adjustmentAmount = currentFee * (rule.value / 100);
+          adjustmentAmount = isFixed
+            ? ruleValue
+            : currentFee.mul(ruleValue).div(100);
         } else {
-          adjustmentAmount = rule.value; // fixed amount
+          adjustmentAmount = ruleValue;
         }
 
-        currentFee += adjustmentAmount;
+        currentFee = currentFee.plus(adjustmentAmount);
 
         adjustments.push({
           ruleName: rule.name,
           type: rule.type,
           value: rule.value,
-          amountAdjusted: Math.abs(adjustmentAmount),
-          finalFeeAfterRule: parseFloat(currentFee.toFixed(2)),
+          amountAdjusted: adjustmentAmount.abs().toDecimalPlaces(2).toNumber(),
+          finalFeeAfterRule: currentFee.toDecimalPlaces(2).toNumber(),
           reason: rule.description,
         });
       }
     }
 
-    const finalFee = Math.max(0, currentFee); // Prevent negative fees
+    // Clamp to zero — no negative fees.
+    const finalFee = Decimal.max(new Decimal(0), currentFee);
 
-    if (currentFee < 0) {
+    if (currentFee.lt(0)) {
       logger.warn({
         msg: 'Fee clamped to 0 after adjustments',
         studentId: context.studentId || null,
-        unclampedAmount: parseFloat(currentFee.toFixed(2)),
+        unclampedAmount: currentFee.toDecimalPlaces(2).toNumber(),
       });
     }
 
+    const baseDecimal = new Decimal(context.baseAmount || 0);
+    const effectiveRate = baseDecimal.gt(0)
+      ? finalFee.div(baseDecimal).mul(100).toDecimalPlaces(2).toNumber()
+      : 100;
+
     return {
-      baseFee: context.baseAmount,
-      finalFee: parseFloat(finalFee.toFixed(2)),
+      baseFee: baseDecimal.toDecimalPlaces(2).toNumber(),
+      finalFee: finalFee.toDecimalPlaces(2).toNumber(),
       adjustments,
-      effectiveRate: context.baseAmount > 0 
-        ? parseFloat(((finalFee / context.baseAmount) * 100).toFixed(2)) 
-        : 100,
+      effectiveRate,
       totalAdjustments: adjustments.length,
     };
   }

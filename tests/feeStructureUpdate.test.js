@@ -87,18 +87,22 @@ describe('PUT /api/fees/:className — issue #454', () => {
     const res = mockRes();
     await updateFeeStructure(req, res, next);
     expect(res.json).toHaveBeenCalledWith({ fee: mockFee, studentsUpdated: 0 });
-    expect(Student.updateMany).not.toHaveBeenCalled();
+    expect(Student.find).not.toHaveBeenCalled();
   });
 
   it('200 updates fee with cascadeToStudents: true', async () => {
     FeeStructure.findOneAndUpdate = jest.fn().mockResolvedValue(mockFee);
-    Student.updateMany = jest.fn().mockResolvedValue({ modifiedCount: 5 });
+    // Controller uses Student.find + per-doc save, not updateMany
+    const mockStudents = Array.from({ length: 5 }, (_, i) => ({
+      feeAmount: 250, remainingBalance: 250, feePaid: false, totalPaid: 0,
+      save: jest.fn().mockResolvedValue(true),
+    }));
+    Student.find = jest.fn().mockResolvedValue(mockStudents);
     const req = mockReq({ feeAmount: 300, cascadeToStudents: true });
     const res = mockRes();
     await updateFeeStructure(req, res, next);
-    expect(Student.updateMany).toHaveBeenCalledWith(
-      { schoolId: 'SCH-TEST', class: 'Grade 5A', deletedAt: null },
-      { feeAmount: 300, remainingBalance: null }
+    expect(Student.find).toHaveBeenCalledWith(
+      { schoolId: 'SCH-TEST', class: 'Grade 5A', deletedAt: null }
     );
     expect(res.json).toHaveBeenCalledWith({ fee: mockFee, studentsUpdated: 5 });
   });
@@ -108,7 +112,7 @@ describe('PUT /api/fees/:className — issue #454', () => {
     const req = mockReq({ feeAmount: 300, cascadeToStudents: false });
     const res = mockRes();
     await updateFeeStructure(req, res, next);
-    expect(Student.updateMany).not.toHaveBeenCalled();
+    expect(Student.find).not.toHaveBeenCalled();
     expect(res.json).toHaveBeenCalledWith({ fee: mockFee, studentsUpdated: 0 });
   });
 
@@ -139,7 +143,11 @@ describe('PUT /api/fees/:className — issue #454', () => {
 
   it('audit log includes studentsUpdated count', async () => {
     FeeStructure.findOneAndUpdate = jest.fn().mockResolvedValue(mockFee);
-    Student.updateMany = jest.fn().mockResolvedValue({ modifiedCount: 3 });
+    const mockStudents = Array.from({ length: 3 }, () => ({
+      feeAmount: 250, remainingBalance: 250, feePaid: false, totalPaid: 0,
+      save: jest.fn().mockResolvedValue(true),
+    }));
+    Student.find = jest.fn().mockResolvedValue(mockStudents);
     const req = mockReq({ feeAmount: 300, cascadeToStudents: true });
     const res = mockRes();
     await updateFeeStructure(req, res, next);

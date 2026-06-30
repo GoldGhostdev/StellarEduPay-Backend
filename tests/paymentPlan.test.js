@@ -8,16 +8,23 @@ const School = require('../backend/src/models/schoolModel');
 
 let mongoServer;
 const schoolId = 'SCH-TEST-PLAN';
+const TEST_DB = 'payment_plan_test';
+const USE_EXTERNAL_MONGO = !!process.env.MONGO_URI;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
-  const mongoUri = mongoServer.getUri();
-  await mongoose.connect(mongoUri);
+  if (USE_EXTERNAL_MONGO) {
+    const baseUri = process.env.MONGO_URI.replace(/\/[^/?]+(\?|$)/, `/${TEST_DB}$1`);
+    await mongoose.connect(baseUri);
+  } else {
+    mongoServer = await MongoMemoryServer.create();
+    await mongoose.connect(mongoServer.getUri());
+  }
 });
 
 afterAll(async () => {
+  await mongoose.connection.db.dropDatabase();
   await mongoose.disconnect();
-  await mongoServer.stop();
+  if (mongoServer) await mongoServer.stop();
 });
 
 beforeEach(async () => {

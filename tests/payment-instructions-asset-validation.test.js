@@ -1,7 +1,7 @@
 'use strict';
 
 process.env.MONGO_URI = 'mongodb://localhost:27017/test';
-process.env.SCHOOL_WALLET_ADDRESS = 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B';
+process.env.SCHOOL_WALLET_ADDRESS = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 process.env.JWT_SECRET = 'test-secret';
 
 const request = require('supertest');
@@ -34,7 +34,7 @@ jest.mock('../backend/src/models/schoolModel', () => ({
       schoolId: 'SCH001',
       name: 'Test School',
       slug: 'test-school',
-      stellarAddress: 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B',
+      stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
       localCurrency: 'USD',
       isActive: true,
     }),
@@ -126,6 +126,18 @@ jest.mock('../backend/src/services/currencyConversionService', () => ({
 
 jest.mock('../backend/src/services/auditService', () => ({
   logAudit: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../backend/src/config/stellarConfig', () => ({
+  server: { transactions: jest.fn(), ledgers: jest.fn() },
+  SCHOOL_WALLET: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  isAcceptedAsset: jest.fn((code) => ({ accepted: ['XLM', 'USDC'].includes(code) })),
+  ACCEPTED_ASSETS: {
+    XLM: { code: 'XLM', type: 'native', displayName: 'Stellar Lumens' },
+    USDC: { code: 'USDC', type: 'credit_alphanum4', displayName: 'USD Coin', issuer: 'GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTQSXUSMIQSTBE2EURIDVXL6B' },
+  },
+  CONFIRMATION_THRESHOLD: 3,
+  FINALIZATION_THRESHOLD: 10,
 }));
 
 const app = require('../backend/src/app');

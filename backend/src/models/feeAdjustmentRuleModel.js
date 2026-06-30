@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantScope = require('../plugins/tenantScope');
 
 /**
  * Fee Adjustment Rule
@@ -68,5 +69,7 @@ const feeAdjustmentRuleSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 feeAdjustmentRuleSchema.index({ schoolId: 1, name: 1 }, { unique: true });
+
+feeAdjustmentRuleSchema.plugin(tenantScope, { modelName: 'FeeAdjustmentRule' });
 
 module.exports = mongoose.model('FeeAdjustmentRule', feeAdjustmentRuleSchema);

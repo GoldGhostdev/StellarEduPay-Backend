@@ -7,6 +7,18 @@ const cors = require('cors');
 const helmet = require('helmet');
 const mongoose = require('mongoose');
 
+// ── Suppress verbose third-party logging in development ──────────────────────
+// Prevent noise from ioredis reconnect attempts, Mongoose debug info, etc.
+// when LOG_LEVEL=info (the development default).
+if (process.env.NODE_ENV !== 'production') {
+  // Suppress ioredis verbose logging (connection/reconnection attempts)
+  const redisDebug = require('debug');
+  redisDebug.disable('*');
+  
+  // Suppress Mongoose debug output
+  mongoose.set('debug', false);
+}
+
 const studentRoutes = require('./routes/studentRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const feeRoutes = require('./routes/feeRoutes');
@@ -24,12 +36,16 @@ const metricsRoute = require('./routes/metricsRoute');
 const { registerPaymentSavedSubscribers } = require('./services/paymentSavedSubscribers');
 const { startPolling, stopPolling } = require('./services/transactionPollingService');
 const retrySelector = require('./services/retryServiceSelector');
-const { startConsistencyScheduler } = require('./services/consistencyScheduler');
+const { startConsistencyScheduler, stopConsistencyScheduler } = require('./services/consistencyScheduler');
 const { startReminderScheduler, stopReminderScheduler } = require('./services/reminderService');
 const { startWorker: startTxQueueWorker, stopWorker: stopTxQueueWorker } = require('./services/transactionQueueService');
 const { startSessionCleanupScheduler, stopSessionCleanupScheduler } = require('./services/sessionCleanupService');
 const { startReconciliationScheduler, stopReconciliationScheduler } = require('./services/reconciliationService');
 const { startAuditLogCleanupScheduler, stopAuditLogCleanupScheduler } = require('./services/auditLogCleanupService');
+const { startMetricsRollupScheduler, stopMetricsRollupScheduler } = require('./services/metricsRollupService');
+const { startWebhookRetryScheduler, stopWebhookRetryScheduler } = require('./services/webhookRetryScheduler');
+const { startOutboxDispatcher, stopOutboxDispatcher } = require('./services/outboxDispatcher');
+const { startReconciliationReportScheduler, stopReconciliationReportScheduler } = require('./services/reconciliationReportScheduler');
 const { closeQueue } = require('./queue/transactionQueue');
 const bullMQRetryService = require('./services/bullMQRetryService');
 const { initializeRetryQueue, setupMonitoring } = require('./config/retryQueueSetup');
@@ -37,8 +53,9 @@ const { notFoundHandler, globalErrorHandler } = require('./middleware/errorHandl
 const { requestLogger } = require('./middleware/requestLogger');
 const { createConcurrentRequestMiddleware } = require('./middleware/concurrentRequestHandler');
 const { requireAdminAuth } = require('./middleware/auth');
+const { jsonDepthGuard, deduplicateQueryParams } = require('./middleware/sanitizeRequest');
 const { runConsistencyCheck } = require('./controllers/consistencyController');
-const { healthCheck } = require('./controllers/healthController');
+const { healthCheck, healthLive, healthReady } = require('./controllers/healthController');
 const logger = require('./utils/logger');
 const { startHeapMonitoring } = require('./utils/heapMonitoring');
 
@@ -80,6 +97,22 @@ app.use(helmet({
 app.use(express.json({ limit: config.MAX_BODY_SIZE }));
 app.use(requestLogger());
 
+// ── Cache-Control: no-store on auth and sensitive data routes ─────────────────
+// Prevents intermediaries (CDNs, shared proxies) from caching tokens,
+// payment data, audit logs, and other sensitive JSON responses.
+const SENSITIVE_PATH_RE = /^\/api\/(auth|payments|students|reports|audit|receipts|disputes|fee-adjustments|payment-plans|reminders)\b/;
+app.use((req, res, next) => {
+  if (SENSITIVE_PATH_RE.test(req.path)) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+  }
+  next();
+});
+
+// ── JSON depth / array-bomb guard + query-param de-pollution ──────────────────
+app.use(jsonDepthGuard);
+app.use(deduplicateQueryParams);
+
 const concurrentMiddleware = createConcurrentRequestMiddleware({
   circuitBreaker: { failureThreshold: 5, resetTimeoutMs: 30000, halfOpenSuccessThreshold: 2 },
   queue: { maxConcurrent: 50, maxSize: 1000, defaultTimeoutMs: 30000 },
@@ -92,6 +125,12 @@ app.use('/metrics', metricsRoute);
 
 app.use(concurrentMiddleware.rateLimiter((req) => req.ip));
 app.use(concurrentMiddleware.requestQueue());
+
+// ── Maintenance mode ───────────────────────────────────────────────────────────
+// Global maintenance mode check. Per-school maintenance mode is enforced inside
+// schoolContext.js after tenant resolution.
+const { maintenanceMode } = require('./middleware/maintenanceMode');
+app.use(maintenanceMode);
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use('/api/schools', schoolRoutes);
@@ -108,6 +147,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/auth', authRoutes);
 app.get('/api/consistency', requireAdminAuth, runConsistencyCheck);
 app.get('/health', healthCheck);
+app.get('/health/live', healthLive);
+app.get('/health/ready', healthReady);
 
 // Issue #671: OpenAPI/Swagger documentation
 try {
@@ -194,15 +235,53 @@ connectWithRetry().then(async () => {
     logger.error('Stuck payment reconciliation failed on startup', { error: err.message });
   }
 
+  // Recover any pending/processing BullMQ jobs that survived a restart in MongoDB
+  const { recoverPendingJobs } = require('./queue/transactionQueue');
+  try {
+    await recoverPendingJobs();
+  } catch (err) {
+    logger.error('Transaction queue recovery failed on startup', { error: err.message });
+  }
+
+  // ── Leader election for singleton schedulers ───────────────────────────────
+  // Polling uses per-school distributed locks; the transaction queue worker
+  // and retry selector are safe for multi-instance.  All other schedulers run
+  // only on the elected leader to prevent N× concurrent execution when scaled.
+  const leaderElection = require('./services/leaderElection');
+
+  const startLeaderSchedulers = () => {
+    logger.info('[Leader] Starting leader-only schedulers');
+    startConsistencyScheduler();
+    startReminderScheduler();
+    startSessionCleanupScheduler();
+    startReconciliationScheduler();
+    startAuditLogCleanupScheduler();
+    startWebhookRetryScheduler();
+    startReconciliationReportScheduler();
+    startMetricsRollupScheduler();
+  };
+
+  const stopLeaderSchedulers = () => {
+    logger.info('[Leader] Stopping leader-only schedulers');
+    stopConsistencyScheduler();
+    stopReminderScheduler();
+    stopSessionCleanupScheduler();
+    stopReconciliationScheduler();
+    stopAuditLogCleanupScheduler();
+    stopWebhookRetryScheduler();
+    stopReconciliationReportScheduler();
+    stopMetricsRollupScheduler();
+  };
+
+  leaderElection.register(startLeaderSchedulers, stopLeaderSchedulers);
+  await leaderElection.start();
+
+  // Always-start services (handle concurrency internally)
   startPolling();
-  startConsistencyScheduler();
   retrySelector.start();
   startTxQueueWorker();
-  startReminderScheduler();
-  startSessionCleanupScheduler();
-  startReconciliationScheduler();
-  startAuditLogCleanupScheduler();
   registerPaymentSavedSubscribers();
+  startOutboxDispatcher();
 
   // Only initialise BullMQ when Redis is configured
   if (retrySelector.useBullMQ()) {
@@ -211,7 +290,14 @@ connectWithRetry().then(async () => {
       setupMonitoring(60000);
       logger.info('All services initialized successfully');
     } catch (error) {
-      logger.error('Failed to initialize retry queue system', { error: error.message });
+      // The HTTP server still boots, but the retry/dead-letter pipeline is dead —
+      // failed payments would silently never be retried. Fail loudly so the broken
+      // state is visible in logs and via /health (retryQueue.status: failed).
+      logger.error(
+        '[CRITICAL] Retry queue failed to initialize — failed payments will NOT be retried. ' +
+        'Investigate Redis/BullMQ connection immediately.',
+        { error: error.message }
+      );
     }
   } else {
     logger.warn('REDIS_HOST is not configured — using MongoDB retry backend. Rate-limit counters are in-process only and will reset on restart. Set REDIS_HOST for production deployments.');
@@ -234,15 +320,20 @@ async function shutdown(signal) {
   // Stop background services — no new work accepted
   stopPolling();
   retrySelector.stop();
-  stopReminderScheduler();
-  stopSessionCleanupScheduler();
-  stopReconciliationScheduler();
-  stopAuditLogCleanupScheduler();
+
+  // Stop leader election (demotes leader, stops leader-only schedulers)
+  try {
+    const leaderElection = require('./services/leaderElection');
+    await leaderElection.stop();
+  } catch (_) { /* leader election may not have been started */ }
 
   try {
     await stopTxQueueWorker();
     await closeQueue();
     await bullMQRetryService.shutdownQueue();
+    await require('./services/sseService').close();
+    await require('./services/distributedLock').close();
+    await require('./services/schoolCacheInvalidator').close();
     logger.info('BullMQ resources closed cleanly');
   } catch (err) {
     logger.error('Error closing BullMQ resources during shutdown', { error: err.message });

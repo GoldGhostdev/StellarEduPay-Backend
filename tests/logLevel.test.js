@@ -6,7 +6,7 @@
  */
 
 process.env.MONGO_URI = 'mongodb://localhost:27017/test';
-process.env.SCHOOL_WALLET_ADDRESS = 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B';
+process.env.SCHOOL_WALLET_ADDRESS = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 process.env.JWT_SECRET = 'test-secret';
 
 const jwt = require('jsonwebtoken');
@@ -87,22 +87,11 @@ jest.mock('../backend/src/models/auditLogModel', () => ({
 }));
 
 // Stub all other routes to avoid unrelated failures
-const routeStub = () => {
-  const fn = jest.fn((req, res, next) => next && next());
-  fn.use = jest.fn().mockReturnThis();
-  fn.get = jest.fn().mockReturnThis();
-  fn.post = jest.fn().mockReturnThis();
-  fn.put = jest.fn().mockReturnThis();
-  fn.patch = jest.fn().mockReturnThis();
-  fn.delete = jest.fn().mockReturnThis();
-  return fn;
-};
-
-jest.mock('../backend/src/routes/schoolRoutes', routeStub);
-jest.mock('../backend/src/routes/studentRoutes', routeStub);
-jest.mock('../backend/src/routes/paymentRoutes', routeStub);
-jest.mock('../backend/src/routes/feeRoutes', routeStub);
-jest.mock('../backend/src/routes/reportRoutes', routeStub);
+jest.mock('../backend/src/routes/schoolRoutes', () => { const fn = jest.fn((req, res, next) => next && next()); fn.use = jest.fn().mockReturnThis(); fn.get = jest.fn().mockReturnThis(); fn.post = jest.fn().mockReturnThis(); fn.put = jest.fn().mockReturnThis(); fn.patch = jest.fn().mockReturnThis(); fn.delete = jest.fn().mockReturnThis(); return fn; });
+jest.mock('../backend/src/routes/studentRoutes', () => { const fn = jest.fn((req, res, next) => next && next()); fn.use = jest.fn().mockReturnThis(); fn.get = jest.fn().mockReturnThis(); fn.post = jest.fn().mockReturnThis(); fn.put = jest.fn().mockReturnThis(); fn.patch = jest.fn().mockReturnThis(); fn.delete = jest.fn().mockReturnThis(); return fn; });
+jest.mock('../backend/src/routes/paymentRoutes', () => { const fn = jest.fn((req, res, next) => next && next()); fn.use = jest.fn().mockReturnThis(); fn.get = jest.fn().mockReturnThis(); fn.post = jest.fn().mockReturnThis(); fn.put = jest.fn().mockReturnThis(); fn.patch = jest.fn().mockReturnThis(); fn.delete = jest.fn().mockReturnThis(); return fn; });
+jest.mock('../backend/src/routes/feeRoutes', () => { const fn = jest.fn((req, res, next) => next && next()); fn.use = jest.fn().mockReturnThis(); fn.get = jest.fn().mockReturnThis(); fn.post = jest.fn().mockReturnThis(); fn.put = jest.fn().mockReturnThis(); fn.patch = jest.fn().mockReturnThis(); fn.delete = jest.fn().mockReturnThis(); return fn; });
+jest.mock('../backend/src/routes/reportRoutes', () => { const fn = jest.fn((req, res, next) => next && next()); fn.use = jest.fn().mockReturnThis(); fn.get = jest.fn().mockReturnThis(); fn.post = jest.fn().mockReturnThis(); fn.put = jest.fn().mockReturnThis(); fn.patch = jest.fn().mockReturnThis(); fn.delete = jest.fn().mockReturnThis(); return fn; });
 jest.mock('../backend/src/controllers/consistencyController', () => ({
   runConsistencyCheck: jest.fn((req, res) => res.json({ status: 'ok' })),
 }));

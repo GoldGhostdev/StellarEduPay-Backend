@@ -57,7 +57,18 @@ const schoolSchema = new mongoose.Schema(
      * Used for date grouping in reports and dashboard metrics.
      * Defaults to UTC.
      */
-    timezone:       { type: String, default: 'UTC', trim: true },
+    timezone: {
+      type: String,
+      default: 'UTC',
+      trim: true,
+      validate: {
+        validator(tz) {
+          if (!tz) return true;
+          try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return true; } catch { return false; }
+        },
+        message: props => `'${props.value}' is not a valid IANA timezone identifier`,
+      },
+    },
     /**
      * Per-school webhook endpoint URL. Must be an https:// URL that resolves
      * to a public IP address (RFC 1918, loopback, and link-local are rejected).
@@ -85,6 +96,26 @@ const schoolSchema = new mongoose.Schema(
       max: [100, 'suspiciousPaymentMultiplier must not exceed 100'],
     },
     /**
+     * Per-tenant configuration for the suspicious-amount heuristic. A flat
+     * multiplier off the expected fee mis-fires for schools whose normal
+     * payments cluster differently; enabling the historical mode bases the
+     * threshold on the school's OWN confirmed-payment distribution instead.
+     *
+     *   mode               — 'fee_multiplier' (default; uses suspiciousPaymentMultiplier)
+     *                        or 'historical' (z-score against the school's history).
+     *   historicalWindowDays    — lookback window for building the distribution.
+     *   historicalStdDevMultiplier — flag amounts more than N std-devs from the mean.
+     *   historicalMinSamples    — minimum confirmed payments before the historical
+     *                             threshold engages (below this it falls back to
+     *                             the fee multiplier, avoiding cold-start noise).
+     */
+    suspiciousAmountConfig: {
+      mode: { type: String, enum: ['fee_multiplier', 'historical'], default: 'fee_multiplier' },
+      historicalWindowDays: { type: Number, default: 90, min: 1, max: 730 },
+      historicalStdDevMultiplier: { type: Number, default: 3.0, min: 1.0, max: 10 },
+      historicalMinSamples: { type: Number, default: 20, min: 1, max: 100000 },
+    },
+    /**
      * Maximum payment multiplier for this school.
      * The maximum allowed payment is feeAmount * maxPaymentMultiplier.
      * Allows each school to define what constitutes a suspicious overpayment.
@@ -109,6 +140,39 @@ const schoolSchema = new mongoose.Schema(
       default: 10000,
       min: [1, 'maxStudents must be at least 1'],
     },
+    /**
+     * MFA (TOTP) protection for school admin operations.
+     * mfaSecret is AES-256-GCM encrypted; key is derived from JWT_SECRET.
+     * mfaBackupCodes holds SHA-256 hashes — each code is single-use.
+     */
+    mfaEnabled: { type: Boolean, default: false },
+    mfaSecret: { type: String, default: null },
+    /**
+     * Per-school maintenance mode. When true, the school's API endpoints
+     * return 503 Service Unavailable. Overrides the global maintenance mode
+     * in SystemConfig for this school only.
+     */
+    maintenanceMode: { type: Boolean, default: false },
+    /**
+     * Per-school settings overrides. Each key overrides the corresponding
+     * SystemConfig global default for this school only.
+     *
+     * Supported keys:
+     *   maxSyncBatchSize   — max transactions per polling cycle (number)
+     *   reminderEnabled    — enable/disable fee reminder emails (boolean)
+     *   reminderIntervalMs — how often reminder scheduler runs (number, ms)
+     *   betaFeatures       — array of opted-in beta feature flags (string[])
+     */
+    settings: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    mfaBackupCodes: [
+      {
+        hash: { type: String, required: true },
+        used: { type: Boolean, default: false },
+      },
+    ],
   },
   { timestamps: true }
 );
@@ -122,6 +186,8 @@ schoolSchema.set('toJSON', {
     delete ret.jwtSecret;
     delete ret.webhookSecret;
     delete ret.internalNotes;
+    delete ret.mfaSecret;
+    delete ret.mfaBackupCodes;
     return ret;
   },
 });

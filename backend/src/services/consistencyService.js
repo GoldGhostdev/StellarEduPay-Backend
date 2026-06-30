@@ -126,4 +126,8 @@ async function checkConsistency() {
   };
 }
 
-module.exports = { checkConsistency };
+module.exports = {
+  checkConsistency,
+  checkSchoolConsistency,
+  fetchChainTransactions,
+};

@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const tenantScope = require('../plugins/tenantScope');
 
 const receiptSchema = new mongoose.Schema(
   {
@@ -16,8 +17,11 @@ const receiptSchema = new mongoose.Schema(
     memo:                { type: String, default: null },
     confirmedAt:         { type: Date, required: true },
     issuedAt:            { type: Date, default: Date.now },
+    signature:           { type: String, default: null },
   },
   { timestamps: true }
 );
+
+receiptSchema.plugin(tenantScope, { modelName: 'Receipt' });
 
 module.exports = mongoose.model('Receipt', receiptSchema);

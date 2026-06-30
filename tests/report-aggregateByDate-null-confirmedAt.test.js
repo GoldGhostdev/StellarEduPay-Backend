@@ -1,7 +1,7 @@
 'use strict';
 
 process.env.MONGO_URI = 'mongodb://localhost:27017/test';
-process.env.SCHOOL_WALLET_ADDRESS = 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B';
+process.env.SCHOOL_WALLET_ADDRESS = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 process.env.JWT_SECRET = 'test-jwt-secret-report';
 
 jest.mock('mongoose', () => ({
@@ -12,32 +12,27 @@ jest.mock('mongoose', () => ({
   model: jest.fn().mockReturnValue({}),
 }));
 
+// Top-level mocks — functions are defined here so they can be reconfigured per test.
+const mockPaymentAggregate = jest.fn();
+const mockPaymentDistinct  = jest.fn();
+const mockStudentAggregate = jest.fn();
+const mockStudentCountDocuments = jest.fn();
+
+jest.mock('../backend/src/models/paymentModel', () => ({
+  aggregate: (...a) => mockPaymentAggregate(...a),
+  distinct:  (...a) => mockPaymentDistinct(...a),
+}));
+
+jest.mock('../backend/src/models/studentModel', () => ({
+  aggregate:      (...a) => mockStudentAggregate(...a),
+  countDocuments: (...a) => mockStudentCountDocuments(...a),
+}));
+
 const reportService = require('../backend/src/services/reportService');
 
 describe('Report Service aggregateByDate (#674)', () => {
-  let mockPaymentAggregate;
-  let mockPaymentDistinct;
-  let mockStudentAggregate;
-  let mockStudentCountDocuments;
-
   beforeEach(() => {
     jest.clearAllMocks();
-
-    // Mock Payment.aggregate for aggregateByDate
-    mockPaymentAggregate = jest.fn();
-    mockPaymentDistinct = jest.fn();
-    mockStudentAggregate = jest.fn();
-    mockStudentCountDocuments = jest.fn();
-
-    jest.mock('../backend/src/models/paymentModel', () => ({
-      aggregate: mockPaymentAggregate,
-      distinct: mockPaymentDistinct,
-    }));
-
-    jest.mock('../backend/src/models/studentModel', () => ({
-      aggregate: mockStudentAggregate,
-      countDocuments: mockStudentCountDocuments,
-    }));
   });
 
   describe('aggregateByDate with null confirmedAt', () => {

@@ -5,7 +5,7 @@ jest.mock('../backend/src/utils/logger', () => ({
 }));
 
 const { logger } = require('../backend/src/utils/logger');
-const { requestLogger, redact } = require('../backend/src/middleware/requestLogger');
+const { requestLogger, redact, redactHeaders } = require('../backend/src/middleware/requestLogger');
 
 function makeReq(overrides = {}) {
   return {
@@ -129,5 +129,39 @@ describe('requestLogger middleware', () => {
     requestLogger()(req, res, () => {});
     res._emit('finish');
     expect(logger.info).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('redactHeaders()', () => {
+  test('redacts authorization header', () => {
+    const result = redactHeaders({ authorization: 'Bearer secret-token', 'content-type': 'application/json' });
+    expect(result.authorization).toBe('[REDACTED]');
+    expect(result['content-type']).toBe('application/json');
+  });
+
+  test('redacts cookie and set-cookie headers', () => {
+    const result = redactHeaders({ cookie: 'admin_token=abc', 'set-cookie': 'admin_token=xyz' });
+    expect(result.cookie).toBe('[REDACTED]');
+    expect(result['set-cookie']).toBe('[REDACTED]');
+  });
+
+  test('redacts idempotency-key header', () => {
+    const result = redactHeaders({ 'idempotency-key': 'key-123', 'x-school-id': 'SCH-001' });
+    expect(result['idempotency-key']).toBe('[REDACTED]');
+    expect(result['x-school-id']).toBe('SCH-001');
+  });
+
+  test('returns empty object for null/undefined input', () => {
+    expect(redactHeaders(null)).toEqual({});
+    expect(redactHeaders(undefined)).toEqual({});
+  });
+
+  test('does not log auth headers by default (LOG_REQUEST_HEADERS not set)', () => {
+    delete process.env.LOG_REQUEST_HEADERS;
+    const req = makeReq({ headers: { authorization: 'Bearer secret', 'user-agent': 'test' } });
+    const res = makeRes();
+    requestLogger()(req, res, () => {});
+    const [, loggedData] = logger.info.mock.calls[0];
+    expect(loggedData).not.toHaveProperty('headers');
   });
 });

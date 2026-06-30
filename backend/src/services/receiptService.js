@@ -1,8 +1,28 @@
 'use strict';
 
+const crypto = require('crypto');
 const Receipt = require('../models/receiptModel');
 const Student = require('../models/studentModel');
 const School = require('../models/schoolModel');
+
+function generateReceiptSignature(receipt) {
+  const payload = {
+    txHash: receipt.txHash,
+    studentId: receipt.studentId,
+    schoolId: receipt.schoolId,
+    amount: receipt.amount,
+    assetCode: receipt.assetCode,
+    confirmedAt: receipt.confirmedAt.toISOString(),
+  };
+  const secret = process.env.RECEIPT_SIGNATURE_SECRET || 'default-receipt-secret';
+  return crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');
+}
+
+function verifyReceiptSignature(receipt) {
+  if (!receipt.signature) return false;
+  const expectedSignature = generateReceiptSignature(receipt);
+  return crypto.timingSafeEqual(Buffer.from(receipt.signature), Buffer.from(expectedSignature));
+}
 
 /**
  * Create a receipt for a successful payment.
@@ -21,7 +41,7 @@ async function createReceipt(payment) {
     School.findOne({ schoolId: payment.schoolId }).lean(),
   ]);
 
-  return Receipt.create({
+  const receipt = await Receipt.create({
     txHash: payment.txHash,
     studentId: payment.studentId,
     studentName: student ? student.name : null,
@@ -34,6 +54,9 @@ async function createReceipt(payment) {
     memo: payment.memo || null,
     confirmedAt: payment.confirmedAt || new Date(),
   });
+
+  receipt.signature = generateReceiptSignature(receipt);
+  return receipt.save();
 }
 
 /**
@@ -47,4 +70,9 @@ async function getReceiptByTxHash(txHash, schoolId) {
   return Receipt.findOne({ txHash, schoolId }).lean();
 }
 
-module.exports = { createReceipt, getReceiptByTxHash };
+module.exports = {
+  createReceipt,
+  getReceiptByTxHash,
+  generateReceiptSignature,
+  verifyReceiptSignature,
+};

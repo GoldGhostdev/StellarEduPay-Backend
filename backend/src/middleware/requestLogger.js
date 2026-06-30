@@ -23,6 +23,15 @@ const { httpRequestDurationSeconds } = require('../metrics');
 
 const DEFAULT_REDACT_FIELDS = ['txHash', 'studentId', 'memo', 'senderAddress'];
 
+// Headers that must never appear in logs (auth/session/PII)
+const SENSITIVE_HEADERS = new Set([
+  'authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'idempotency-key',
+]);
+
 function getRedactFields() {
   if (process.env.LOG_REDACT_FIELDS) {
     return process.env.LOG_REDACT_FIELDS.split(',').map((f) => f.trim()).filter(Boolean);
@@ -40,6 +49,15 @@ function redact(obj) {
     }
   }
   return result;
+}
+
+function redactHeaders(headers) {
+  if (!headers || typeof headers !== 'object') return {};
+  const out = {};
+  for (const [k, v] of Object.entries(headers)) {
+    out[k] = SENSITIVE_HEADERS.has(k.toLowerCase()) ? '[REDACTED]' : v;
+  }
+  return out;
 }
 
 let _counter = 0;
@@ -76,6 +94,9 @@ function requestLogger() {
     if (req.query && Object.keys(req.query).length > 0) {
       logData.query = redact(req.query);
     }
+    if (process.env.LOG_REQUEST_HEADERS === 'true') {
+      logData.headers = redactHeaders(req.headers);
+    }
 
     logger.info('[Request] incoming', logData);
 
@@ -105,4 +126,4 @@ function requestLogger() {
   };
 }
 
-module.exports = { requestLogger, redact };
+module.exports = { requestLogger, redact, redactHeaders };

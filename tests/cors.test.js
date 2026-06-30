@@ -1,16 +1,19 @@
 'use strict';
 
 /**
- * Tests for Issue #405 — CORS origin validation.
+ * Tests for Issue #824 — CORS credentials + origin allowlist audit.
  *
- * parseAllowedOrigins() reads process.env at call time, so we set env vars
- * before each call and restore them after.
+ * parseAllowedOrigins() must:
+ *  - Reject wildcard (*) unconditionally (credentials:true makes it unsafe)
+ *  - Reject an empty/blank origin list
+ *  - Accept a single valid origin
+ *  - Accept a comma-separated list of valid origins
+ *  - Trim whitespace around each entry
+ *  - Reject invalid URLs
  */
 
-// Load the function once — it has no module-level side effects
 const { parseAllowedOrigins } = require('../backend/src/utils/corsOrigins');
 
-// Helper: call parseAllowedOrigins with specific env vars, then restore
 function parse(envOverrides = {}) {
   const saved = {};
   for (const [k, v] of Object.entries(envOverrides)) {
@@ -32,59 +35,63 @@ function parse(envOverrides = {}) {
   return result;
 }
 
-describe('Issue #405 — CORS origin validation', () => {
-  // ── Valid configurations ──────────────────────────────────────────────────
+describe('Issue #824 — CORS origin allowlist', () => {
+  // ── Wildcard rejection (credentials:true makes * unsafe) ─────────────────
 
-  test('single valid origin — returns the origin string', () => {
-    const result = parse({ NODE_ENV: 'development', ALLOWED_ORIGIN: 'https://app.school.com' });
-    expect(result).toBe('https://app.school.com');
+  test('wildcard (*) is rejected in development', () => {
+    expect(() =>
+      parse({ NODE_ENV: 'development', ALLOWED_ORIGIN: '*' })
+    ).toThrow(/wildcard.*not permitted/i);
   });
-
-  test('multiple comma-separated valid origins — returns an array', () => {
-    const result = parse({
-      NODE_ENV: 'development',
-      ALLOWED_ORIGIN: 'https://app.school.com,https://admin.school.com',
-    });
-    expect(result).toEqual(['https://app.school.com', 'https://admin.school.com']);
-  });
-
-  test('wildcard (*) is allowed in development — returns "*"', () => {
-    const result = parse({ NODE_ENV: 'development', ALLOWED_ORIGIN: '*' });
-    expect(result).toBe('*');
-  });
-
-  test('missing ALLOWED_ORIGIN falls back to http://localhost:3000', () => {
-    const result = parse({ NODE_ENV: 'development', ALLOWED_ORIGIN: undefined });
-    expect(result).toBe('http://localhost:3000');
-  });
-
-  test('origin with surrounding whitespace is trimmed and accepted', () => {
-    const result = parse({
-      NODE_ENV: 'development',
-      ALLOWED_ORIGIN: '  https://app.school.com  ,  https://admin.school.com  ',
-    });
-    expect(result).toEqual(['https://app.school.com', 'https://admin.school.com']);
-  });
-
-  // ── Production security ───────────────────────────────────────────────────
 
   test('wildcard (*) is rejected in production', () => {
     expect(() =>
       parse({ NODE_ENV: 'production', ALLOWED_ORIGIN: '*' })
-    ).toThrow(/wildcard.*not permitted in production/i);
+    ).toThrow(/wildcard.*not permitted/i);
+  });
+
+  // ── Empty / blank origin list ─────────────────────────────────────────────
+
+  test('empty ALLOWED_ORIGIN string throws a descriptive error', () => {
+    expect(() =>
+      parse({ ALLOWED_ORIGIN: '   ' })
+    ).toThrow(/at least one valid origin/i);
+  });
+
+  // ── Valid configurations ──────────────────────────────────────────────────
+
+  test('single valid origin returns the origin string', () => {
+    expect(parse({ ALLOWED_ORIGIN: 'https://app.school.com' }))
+      .toBe('https://app.school.com');
+  });
+
+  test('comma-separated valid origins return an array', () => {
+    expect(
+      parse({ ALLOWED_ORIGIN: 'https://app.school.com,https://admin.school.com' })
+    ).toEqual(['https://app.school.com', 'https://admin.school.com']);
+  });
+
+  test('whitespace around origins is trimmed', () => {
+    expect(
+      parse({ ALLOWED_ORIGIN: '  https://app.school.com  ,  https://admin.school.com  ' })
+    ).toEqual(['https://app.school.com', 'https://admin.school.com']);
+  });
+
+  test('missing ALLOWED_ORIGIN falls back to http://localhost:3000', () => {
+    expect(parse({ ALLOWED_ORIGIN: undefined })).toBe('http://localhost:3000');
   });
 
   // ── Invalid URL rejection ─────────────────────────────────────────────────
 
-  test('invalid URL causes a descriptive error', () => {
+  test('invalid URL throws a descriptive error', () => {
     expect(() =>
-      parse({ NODE_ENV: 'development', ALLOWED_ORIGIN: 'not-a-valid-url' })
+      parse({ ALLOWED_ORIGIN: 'not-a-url' })
     ).toThrow(/invalid URL/i);
   });
 
-  test('one invalid URL in a comma-separated list causes a descriptive error', () => {
+  test('one invalid URL in a comma-separated list throws', () => {
     expect(() =>
-      parse({ NODE_ENV: 'development', ALLOWED_ORIGIN: 'https://app.school.com,bad-url' })
+      parse({ ALLOWED_ORIGIN: 'https://app.school.com,bad-url' })
     ).toThrow(/invalid URL/i);
   });
 });

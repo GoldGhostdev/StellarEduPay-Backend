@@ -77,4 +77,28 @@ describe('globalErrorHandler — stack trace exposure', () => {
     const body = captureBody(res);
     expect(body.error.stack).toBe(err.stack);
   });
+
+  test('masks internal 5xx error message in production', () => {
+    process.env.NODE_ENV = 'production';
+    const err = new Error('DB connection string: mongodb://admin:secret@host/db');
+
+    const res = makeRes();
+    globalErrorHandler(err, makeReq(), res, jest.fn());
+
+    const body = captureBody(res);
+    expect(body.error.message).toBe('An internal server error occurred.');
+    expect(body.error.message).not.toContain('mongodb://');
+  });
+
+  test('preserves 4xx error message in production (client errors are safe to echo)', () => {
+    process.env.NODE_ENV = 'production';
+    const err = new Error('Validation failed: amount must be positive');
+    err.code = 'VALIDATION_ERROR'; // maps to 400
+
+    const res = makeRes();
+    globalErrorHandler(err, makeReq(), res, jest.fn());
+
+    const body = captureBody(res);
+    expect(body.error.message).toBe('Validation failed: amount must be positive');
+  });
 });

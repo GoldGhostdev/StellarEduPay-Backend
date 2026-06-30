@@ -2,7 +2,7 @@
 
 // Set env vars BEFORE requiring app
 process.env.MONGO_URI = 'mongodb://localhost:27017/test';
-process.env.SCHOOL_WALLET_ADDRESS = 'GCICZOP346CKADPWOZ6JAQ7OCGH44UELNS3GSDXFOTSZRW6OYZZ6KSY7B';
+process.env.SCHOOL_WALLET_ADDRESS = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 process.env.JWT_SECRET = 'test-secret-key-for-authentication-tests';
 
 const request = require('supertest');
@@ -33,7 +33,13 @@ jest.mock('../backend/src/models/feeStructureModel', () => ({
 }));
 
 jest.mock('../backend/src/models/schoolModel', () => ({
-  findOne: jest.fn(),
+  findOne: jest.fn().mockReturnValue({
+    lean: jest.fn().mockResolvedValue({
+      schoolId: 'school-a', name: 'Test School', slug: 'school-a',
+      stellarAddress: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+      isActive: true,
+    }),
+  }),
   find: jest.fn(),
   create: jest.fn(),
   findByIdAndUpdate: jest.fn(),
@@ -72,6 +78,9 @@ jest.mock('../backend/src/services/auditService', () => ({
 
 jest.mock('../backend/src/services/retryService', () => ({
   queueForRetry: jest.fn().mockResolvedValue({}),
+  startRetryWorker: jest.fn(),
+  stopRetryWorker: jest.fn(),
+  isRetryWorkerRunning: jest.fn().mockReturnValue(false),
 }));
 
 jest.mock('../backend/src/utils/memoEncryption', () => ({
