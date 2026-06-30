@@ -105,6 +105,8 @@ function isEligible(student, school) {
   if (!student.parentEmail)           return false;
   if (student.reminderOptOut)         return false;
   if (student.parentEmailSuppressed)  return false;
+  // Pause all automated reminders while a dispute is active on this student's payment.
+  if (student.disputeHold)            return false;
   if (student.reminderCount >= REMINDER_MAX_COUNT) return false;
 
   // Scope reminder count to the current fee period.

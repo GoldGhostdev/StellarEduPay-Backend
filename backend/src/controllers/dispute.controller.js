@@ -11,6 +11,7 @@
 
 const Dispute = require('../models/disputeModel');
 const Payment = require('../models/paymentModel');
+const Student = require('../models/studentModel');
 const { logAudit } = require('../services/auditService');
 const { emit: sseEmit } = require('../services/sseService');
 const { fireWebhook } = require('../services/webhookService');
@@ -130,7 +131,13 @@ async function _syncPaymentStatus(schoolId, txHash, newDisputeStatus) {
 }
 
 // ── Controller actions ────────────────────────────────────────────────────────
-
+/**
+ * POST /api/disputes
+ *
+ * Creates a new dispute record, sets a disputeHold on the student so
+ * automated reminders and downstream automation are paused, then notifies
+ * the school via SSE, webhook, and audit log.
+ */
 async function flagDispute(req, res, next) {
   try {
     const { schoolId } = req;
@@ -173,6 +180,12 @@ async function flagDispute(req, res, next) {
       evidence: evidence || [],
       status: 'open',
     });
+
+    // #993 — Pause automated reminders/automation while the dispute is active.
+    await Student.findOneAndUpdate(
+      { schoolId, studentId },
+      { $set: { disputeHold: true } }
+    );
 
     // Sync payment to DISPUTED
     await _syncPaymentStatus(schoolId, txHash, 'open');
@@ -235,6 +248,7 @@ async function getDisputeById(req, res, next) {
  * Transitions a dispute status according to the state machine (#895).
  * Requires a real authenticated actor — no 'admin' fallback (#895).
  * Audits the transition, emits SSE/webhook, and syncs payment status (#894).
+ * Lifts the student's disputeHold when the dispute reaches a terminal state (#993).
  */
 async function resolveDispute(req, res, next) {
   try {
@@ -309,6 +323,14 @@ async function resolveDispute(req, res, next) {
 
     if (!dispute) {
       return res.status(404).json({ error: 'Dispute not found.', code: 'NOT_FOUND' });
+    }
+
+    // #993 — Lift the dispute hold once the dispute reaches a terminal state.
+    if (isTerminal) {
+      await Student.findOneAndUpdate(
+        { schoolId, studentId: dispute.studentId },
+        { $set: { disputeHold: false } }
+      );
     }
 
     // #894 — Audit the transition with actor + note
