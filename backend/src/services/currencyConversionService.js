@@ -37,6 +37,8 @@ const REDIS_CACHE_TTL_S = Math.ceil(PRICE_STALE_THRESHOLD_MS / 1000);
 let _metricsInitialized = false;
 let priceFeedAvailable;
 let priceFeedStaleness;
+let priceFeedLastSuccessTimestamp;
+let priceFeedStale;
 
 function _initMetrics() {
   if (_metricsInitialized) return;
@@ -58,6 +60,26 @@ function _initMetrics() {
       registers: [registry],
     });
 
+    // Unix timestamp (seconds) of the most recent successful fetch per provider.
+    // A value of 0 means no successful fetch has occurred since the process started.
+    // Use `time() - price_feed_last_success_timestamp` in PromQL to compute age.
+    priceFeedLastSuccessTimestamp = new client.Gauge({
+      name: "price_feed_last_success_timestamp",
+      help: "Unix timestamp (seconds) of the last successful price feed fetch per provider",
+      labelNames: ["provider"],
+      registers: [registry],
+    });
+
+    // Binary staleness flag: 1 when ALL providers have been failing long enough
+    // that the cached rate has exceeded PRICE_STALE_THRESHOLD_MS, 0 otherwise.
+    // Alert on `price_feed_stale == 1` for prolonged outage visibility.
+    priceFeedStale = new client.Gauge({
+      name: "price_feed_stale",
+      help: "1 when the price feed cache has exceeded the stale threshold and fiat display is degraded, 0 otherwise",
+      labelNames: ["provider"],
+      registers: [registry],
+    });
+
     _metricsInitialized = true;
   } catch (_) {
     // metrics/index not loaded yet — will be initialized lazily on first use
@@ -74,6 +96,27 @@ function _recordStaleness(provider, lastSuccessfulFetchMs) {
   if (priceFeedStaleness && lastSuccessfulFetchMs) {
     priceFeedStaleness.set({ provider }, Math.floor((Date.now() - lastSuccessfulFetchMs) / 1000));
   }
+}
+
+/**
+ * Record the Unix timestamp of a successful fetch and clear the stale flag.
+ * Called immediately after a provider succeeds.
+ */
+function _recordLastSuccess(provider) {
+  _initMetrics();
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (priceFeedLastSuccessTimestamp) priceFeedLastSuccessTimestamp.set({ provider }, nowSeconds);
+  if (priceFeedStale)               priceFeedStale.set({ provider }, 0);
+}
+
+/**
+ * Mark the feed as stale for a provider.
+ * Called when the stale-while-revalidate window is exhausted and the cache
+ * can no longer serve any usable rate for the given provider.
+ */
+function _recordStale(provider) {
+  _initMetrics();
+  if (priceFeedStale) priceFeedStale.set({ provider }, 1);
 }
 
 // ── In-process cache (fallback when Redis unavailable) ───────────────────────
@@ -184,6 +227,7 @@ async function _fetchRates(currency) {
       const now = Date.now();
       _recordAvailable(name, true);
       _recordStaleness(name, now);
+      _recordLastSuccess(name);
       logger.info("Price feed fetch succeeded", { provider: name, currency });
       return { rates, fetchedAt: now, lastSuccessfulFetch: now, provider: name };
     } catch (err) {
@@ -227,6 +271,12 @@ async function getRates(currency) {
           logger.warn("Serving stale rate", { currency: key, staleAge, provider: cached.provider });
           return { ...cached, stale: true, staleAge };
         }
+        // Cache exists but the stale threshold is exhausted — flag the feed as stale.
+        _recordStale(cached.provider);
+      } else {
+        // No cache at all — mark both providers as stale so the alert fires.
+        _recordStale("coingecko");
+        _recordStale("coinbase");
       }
       throw err;
     }
