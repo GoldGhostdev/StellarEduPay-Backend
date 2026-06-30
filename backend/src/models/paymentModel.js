@@ -16,18 +16,55 @@ const paymentSchema = new mongoose.Schema(
 
     // unique: false here — uniqueness is enforced by the compound index { schoolId, txHash } below
     txHash: { type: String, required: true, index: true },
-    amount: { type: Number, required: true },
+    amount: {
+      type: Number,
+      required: true,
+      min: [0, 'amount must be non-negative'],
+      validate: [
+        {
+          validator: (v) => Number.isFinite(v),
+          message: 'amount must be a finite number',
+        },
+      ],
+    },
 
     // Correlation ID tying this payment to its full async lifecycle (polling
     // -> queue -> processor -> webhook -> SSE). Deterministically derived
     // from txHash — see utils/correlationId.js.
     correlationId: { type: String, default: null, index: true },
-    feeAmount: { type: Number, default: null },
+    feeAmount: {
+      type: Number,
+      default: null,
+      min: [0, 'feeAmount must be non-negative'],
+      validate: [
+        {
+          validator: (v) => v === null || v === undefined || Number.isFinite(v),
+          message: 'feeAmount must be a finite number or null',
+        },
+      ],
+    },
     feeCategory: { type: String, default: null, index: true },
     feeValidationStatus: { type: String, enum: ['valid', 'underpaid', 'overpaid', 'partial', 'unknown'], default: 'unknown' },
-    excessAmount: { type: Number, default: 0 },
+    excessAmount: {
+      type: Number,
+      default: 0,
+      min: [0, 'excessAmount must be non-negative'],
+      validate: [
+        {
+          validator: (v) => Number.isFinite(v),
+          message: 'excessAmount must be a finite number',
+        },
+      ],
+    },
 
-    assetCode: { type: String, default: null },
+    assetCode: {
+      type: String,
+      default: null,
+      enum: {
+        values: ['XLM', 'USDC', null],
+        message: "assetCode must be 'XLM', 'USDC', or null",
+      },
+    },
     assetType: { type: String, default: null },
 
     status: { type: String, enum: ['PENDING', 'SUBMITTED', 'SUCCESS', 'FAILED', 'DISPUTED', 'REFUNDED', 'INVALID'], default: 'PENDING' },
@@ -173,7 +210,7 @@ const ADMIN_PAYMENT_STATUS_TRANSITIONS = {
   DISPUTED:  ['REFUNDED'],
 };
 
-paymentSchema.pre('save', function (next) {
+paymentSchema.pre('save', async function () {
   // Use in-memory Mongoose helpers instead of a DB query to avoid an N+1
   // round-trip on every save. this.isNew is true for inserts; for existing
   // documents Mongoose tracks the original field values so we can check the
@@ -196,7 +233,7 @@ paymentSchema.pre('save', function (next) {
             `Payment status transition from ${originalStatus} to ${newStatus} is not allowed`,
           );
           err.code = 'INVALID_TRANSITION';
-          return next(err);
+          throw err;
         }
       }
     }
@@ -219,9 +256,26 @@ paymentSchema.pre('save', function (next) {
           `Payment confirmationState transition from ${originalConfirmationState} to ${newConfirmationState} is not allowed`,
         );
         err.code = 'INVALID_CONFIRMATION_TRANSITION';
-        return next(err);
+        throw err;
       }
     }
+  }
+
+  // Issue #68 — Normalize numeric precision to 7 decimal places (Stellar's
+  // canonical precision) so aggregates never accumulate floating-point drift.
+  // Also rejects any non-finite value that somehow slipped past the validator
+  // (e.g. values written directly via update operators bypass Mongoose validators).
+  const STELLAR_DECIMALS = 7;
+  const normalize = (v) => (v != null && Number.isFinite(v) ? parseFloat(v.toFixed(STELLAR_DECIMALS)) : v);
+
+  if (this.isModified('amount') && this.amount != null) {
+    this.amount = normalize(this.amount);
+  }
+  if (this.isModified('feeAmount') && this.feeAmount != null) {
+    this.feeAmount = normalize(this.feeAmount);
+  }
+  if (this.isModified('excessAmount') && this.excessAmount != null) {
+    this.excessAmount = normalize(this.excessAmount);
   }
 
   // Encrypt memo field at rest using application-level AES-256-GCM encryption.
@@ -229,8 +283,6 @@ paymentSchema.pre('save', function (next) {
   if (this.isModified('memo') && this.memo != null) {
     this.memo = memoEncryption.encryptMemo(this.memo);
   }
-
-  next();
 });
 
 // Decrypt memo transparently after loading from the database.
