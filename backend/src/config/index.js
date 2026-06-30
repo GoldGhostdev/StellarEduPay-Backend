@@ -180,8 +180,12 @@ const SMTP_USER = process.env.SMTP_USER || null;
 const SMTP_PASS = process.env.SMTP_PASS || null;
 const SMTP_FROM = process.env.SMTP_FROM || "noreply@stellaredupay.com";
 
+// Email provider inbound webhook secret
+const EMAIL_PROVIDER_WEBHOOK_SECRET = process.env.EMAIL_PROVIDER_WEBHOOK_SECRET || null;
+
 // ── Freeze to prevent accidental mutation at runtime ─────────────────────────
 const config = Object.freeze({
+  EMAIL_PROVIDER_WEBHOOK_SECRET,
   PORT,
   MONGO_URI,
   STELLAR_NETWORK,

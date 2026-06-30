@@ -38,6 +38,11 @@ const studentSchema = new mongoose.Schema(
     lastReminderSentAt: { type: Date, default: null },
     reminderCount: { type: Number, default: 0 },
     reminderOptOut: { type: Boolean, default: false },
+    parentEmailSuppressed: { type: Boolean, default: false },
+    parentEmailSuppressionReason: { type: String, default: null },
+    parentEmailSuppressedAt: { type: Date, default: null },
+    lastEmailDeliveryStatus: { type: String, enum: ['queued', 'sent', 'failed', 'delivered', 'opened', 'bounced', 'complaint', 'skipped'], default: null },
+    lastEmailDeliveryAt: { type: Date, default: null },
 
     // Audit fields
     dateOfBirth: { type: Date },

@@ -309,11 +309,13 @@ paymentSchema.post('save', async function () {
         studentId: this.studentId,
       });
 
-      if (student && student.contactEmail) {
+      if (student && student.parentEmail) {
         // Queue email via BullMQ (non-blocking)
         const emailService = require('./emailService');
         await emailService.sendPaymentReceipt({
-          to: student.contactEmail,
+          schoolId: this.schoolId,
+          studentId: this.studentId,
+          to: student.parentEmail,
           studentName: student.name,
           amount: this.amount,
           txHash: this.txHash,
